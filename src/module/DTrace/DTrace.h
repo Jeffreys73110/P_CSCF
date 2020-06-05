@@ -18,6 +18,7 @@
 #include "../Functions/Functions.h"
 #include "../wincmpt/include/WinCompatibility.h"
 #include "../netcpi/include/NetInterface.h"
+#include "../net_interface/net_interface.h"
 
 #ifndef _MSC_VER
 	#define	OutputDebugString(x)	printf("%s",x)

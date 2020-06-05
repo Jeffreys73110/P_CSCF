@@ -29,6 +29,7 @@ typedef char HASHHEX[HASHHEXLEN+1];
 #define IN
 #define OUT
 
+int MD5_M(char *Algorithm,char *Method,char *From_Name,char *From_URL,char *From_Password,char *Realm, char *Nonce,char *NC,char *CNonce,char *Qop,char *Response);
 int	MD5(char *Algorithm,    char *Method,char *From_Name,char *From_URL,char *From_Password,char *Realm, char *Nonce,    char *Response);
 void CvtHex( IN HASH Bin, OUT HASHHEX Hex);	// Add with Jeffreys
 

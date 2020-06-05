@@ -6,7 +6,8 @@ Debug
 Release
 FileTraceLog
 build
-*.out*
+*.out
+*.map
 
 ### C++ ###
 # Prerequisites

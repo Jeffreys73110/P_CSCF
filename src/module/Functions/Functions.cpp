@@ -37,7 +37,7 @@ int Jstrnlen(const char *string, int buf_size)
 	return l;
 }
 
-int Jatoi(const char *str, size_t str_size)
+int _Jatoi(const char *str, size_t str_size)
 {
 	bool minus_flag = false;
 	int Value = 0, Digit;
@@ -348,7 +348,7 @@ int Jstrcmp(const char *str1, const char *str2, size_t str1_size, size_t str2_si
 	}
 }
 
-#define Jstrcpy(x, y) Jstrncpy(x, y, sizeof(x))
+// #define Jstrcpy(x, y) Jstrncpy(x, y, sizeof(x))
 char *Jstrncpy(char *strDest, const char *strSource, size_t count)
 {
 	unsigned int i;
@@ -509,10 +509,10 @@ char *Jstrftime(char *strDest, size_t maxsize, const char *format, const timeb *
 	const char *Rformat = format;
 	struct tm *p;
 	bool millitm_Flag = false;
+	timeb tp2;
 
 	if (tp == NULL)
 	{
-		timeb tp2;
 		ftime(&tp2);
 		p = localtime(&tp2.time);
 		tp = &tp2;
@@ -549,7 +549,7 @@ char *Jstrftime(char *strDest, size_t maxsize, const char *format, const timeb *
 	return strDest;
 }
 
-std::string *Jstringftime(std::string &strDest, const char *format, const timeb *tp)
+std::string &Jstringftime(std::string &strDest, const char *format, const timeb *tp)
 {
 	// %f: millitm
 	// ex: ------------
@@ -568,48 +568,60 @@ std::string *Jstringftime(std::string &strDest, const char *format, const timeb 
 	size_t format_Len, Buf_Len;
 	unsigned int i, j, k;
 	char Buf[Buf_SIZE], Buf_milli[10];
-	const char *Rformat = format;
+	std::string	Rformat = format;
 	struct tm *p;
 	bool millitm_Flag = false;
+	strDest.clear();
+	timeb tp2;
 
 	if (tp == NULL)
 	{
-		timeb tp2;
 		ftime(&tp2);
-		p = localtime(&tp2.time);
 		tp = &tp2;
 	}
+	p = localtime(&tp2.time);
+
+	// printf("time=%d,\n"
+	// "millitm=%d,\n"
+	// "timezone=%d,\n"
+	// "dstflag=%d,\n"
+	// "tm_sec=%d,\n"
+	// "tm_min=%d,\n"
+	// "tm_hour=%d,\n"
+	// "tm_mday=%d,\n"
+	// "tm_mon=%d,\n"
+	// "tm_year=%d,\n"
+	// "tm_wday=%d,\n"
+	// "tm_yday=%d,\n"
+	// "tm_isdst=%d,\n"
+	// "tm_gmtoff%d\n\n", 
+	// tp->time,
+	// tp->millitm,
+	// tp->timezone,
+	// tp->dstflag,
+	// p->tm_sec,
+	// p->tm_min,
+	// p->tm_hour,
+	// p->tm_mday,
+	// p->tm_mon,
+	// p->tm_year,
+	// p->tm_wday,
+	// p->tm_yday,
+	// p->tm_isdst,
+	// p->tm_gmtoff);
+	
 	if ((format_Len = strlen(format)) < Buf_SIZE)
 	{
-		Buf[0] = '\0';
-		Buf_Len = format_Len;
-		Len = _snprintf(Buf_milli, sizeof(Buf_milli), "%03d", tp->millitm);
-		if (Len >= 0 && Len <= 3)
+		size_t pos = Rformat.find("%f");
+		if (pos != std::string::npos)
 		{
-			for (i = j = k = 0; i < format_Len && Buf_Len < (Buf_SIZE - 3); i++)
-			{
-				if (format[i] == '%' && format[i + 1] == 'f')
-				{
-					millitm_Flag = true;
-					strncat(Buf, &format[j], i - j);
-					Buf[(k += i - j)] = '\0';
-					strcat(Buf, Buf_milli);
-					k += Len;
-					Buf_Len += Len - 2;
-					j = i + 2;
-				}
-			}
-			if (i >= format_Len && millitm_Flag)
-			{
-				strcat(Buf, &format[j]);
-				Rformat = Buf;
-			}
+			Len = _snprintf(Buf_milli, sizeof(Buf_milli), "%03d", tp->millitm);
+			Rformat.replace(pos, 2, Buf_milli);
 		}
 	}
-	p = localtime(&tp->time);
-	strftime(Buf, sizeof(Buf), Rformat, p);
+	strftime(Buf, sizeof(Buf), Rformat.c_str(), p);
 	strDest = Buf;
-	return &strDest;
+	return strDest;
 }
 
 unsigned long JGetTickCount()
@@ -1158,7 +1170,7 @@ int GetPrivateProfileInt(const char *lpAppName, const char *lpKeyName, int nDefa
 	Jsprintf(sDefault, sizeof(sDefault), "%d", nDefault);
 	if (!GetPrivateProfileString(lpAppName, lpKeyName, sDefault, data, sizeof(data) - 1, lpFileName))
 		return 0;
-	return Jatoi(data, sizeof(data));
+	return _Jatoi(data, sizeof(data));
 }
 
 int CheckPrivateProfileString(std::string &content, const char *lpAppName, const char *lpKeyName, const char *lpFileName)
@@ -2191,4 +2203,127 @@ size_t Jstring::find(Jstring &find)
 		return npos;
 	else
 		return (size_t)(found - strbuf);
+}
+
+// #define JTransfer_BinaryToHexStr(msg, len) string_JTransfer_BinaryToHexStr(msg, len).c_str()
+std::string string_JTransfer_BinaryToHexStr(const char *msg, size_t len)
+{
+	// const char hex[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+	// char buf[32] = "";
+	// int i;
+
+	// for (i = 0; i < len; i++)
+	// {
+	// 	buf[i * 2] = hex[(msg[i] & 0xf0) >> 4];
+	// 	buf[i * 2 + 1] = hex[msg[i] & 0x0f];
+	// }
+	// buf[i * 2] = 0;
+	// return buf;
+
+	const char hex[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+	// char buf[32];
+	std::string	str;
+	int i;
+
+	for (i=0; i<len; i++)
+	{
+		str.push_back(hex[(msg[i]&0xf0)>>4]);
+		str.push_back(hex[msg[i]&0x0f]);
+	}
+
+	// printf("str=%s\n", str.c_str());
+	return str;
+}
+
+// #define JTransfer_HexNumStrToHexBinary(hex_num_str, len)	string_JTransfer_HexNumStrToHexBinary(hex_num_str, len).c_str()
+std::string string_JTransfer_HexNumStrToHexBinary(const char *hex_num_str, size_t len)
+{
+	if (len>=65536)	return "";
+	std::string hexbinstr;
+	char c;
+
+	for (int i=0; i<len; i++)
+	{
+		if (hex_num_str[i]>='0' && hex_num_str[i]<='9')	
+			c = hex_num_str[i] - '0';
+		else if (hex_num_str[i]>='a' && hex_num_str[i]<='z')	
+			c = hex_num_str[i] - 'a';
+		else if (hex_num_str[i]>='A' && hex_num_str[i]<='Z')	
+			c = hex_num_str[i] - 'A';
+		
+		hexbinstr.push_back(c);
+	}
+	
+	return hexbinstr;
+}
+
+// PrintCalClockTime
+double CalClockTime(bool start_flag)
+{
+	static clock_t start_ck, end_ck;
+
+	if (!start_flag)
+	{
+		start_ck = clock();
+		return 0;
+	}
+	else
+	{
+		end_ck = clock();
+		return ((double)(end_ck - start_ck)) / CLOCKS_PER_SEC;
+	}
+}
+
+// PrintBinary
+int PrintBinary(const char *msg, int len)
+{
+#if PrintBinary_ENABLE
+	for (int i = 0, j = 0, l = 0; i < len; i += 16)
+	{
+		printf("  ");
+		for (j = 0, l = std::min(len - i, 8); j < l; j++)
+			printf("%02x ", (unsigned char)msg[i + j]);
+		if (l <= 0)
+			continue;
+		printf(" ");
+		for (j = 0, l = std::min(len - i - 8, 8); j < l; j++)
+			printf("%02x ", (unsigned char)msg[i + j + 8]);
+		printf("\n");
+	}
+	printf("\n\n");
+#endif
+	return 0;
+}
+
+// Myprintf
+int MyPrintf(const char *fmt, ...)
+{
+	char s[1024];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(s, sizeof(s), fmt, ap);
+	va_end(ap);
+	puts(s);
+
+	return 0;
+}
+
+// TCP flag
+char *MakeTcpFlagStr(tcphdr *tcp)
+{
+	static char strflag[32] = "";
+
+	if (!tcp)
+		return strflag;
+
+	snprintf(strflag, sizeof(strflag), "%s%s%s%s%s%s",
+			 (tcp->fin) ? "FIN" : "",
+			 (tcp->syn) ? ",SYN" : "",
+			 (tcp->rst) ? ",RST" : "",
+			 (tcp->psh) ? ",PSH" : "",
+			 (tcp->ack) ? ",ACK" : "",
+			 (tcp->urg) ? ",URG" : "");
+
+	return strflag;
 }

@@ -707,7 +707,7 @@ int CNetIF::NetObjectInit()
 // 	CRASH_DEBUG_COMMAND;
 // }
 
-int CNetIF::StartNcServer(NetConnect_t *nc, int af_inet, int socket_type, WORD ServerPort, MIXS_CALLBACK lpFunction, void *lpObject, uint32_t Event)
+int CNetIF::StartNcServer(NetConnect_t *nc, int af_inet, int socket_type, const char *Server_IP, WORD ServerPort, MIXS_CALLBACK lpFunction, void *lpObject, uint32_t Event)
 {
 	CRASH_DEBUG_COMMAND;
 	if (!nc)
@@ -739,15 +739,16 @@ int CNetIF::StartNcServer(NetConnect_t *nc, int af_inet, int socket_type, WORD S
 	if (socket_type == SOCK_DGRAM)
 	{	
 		nc->alloc();
-		ret = NetStartUServer(nc->mixsocket, nc->RecvBuf.wsabuf, NULL, ServerPort);
+		ret = NetStartUServer(nc->mixsocket, nc->RecvBuf.wsabuf, Server_IP, ServerPort);
 	}
-	else if (socket_type == SOCK_STREAM)	ret = NetStartTServer(nc->mixsocket, NULL, ServerPort);
+	else if (socket_type == SOCK_STREAM)	ret = NetStartTServer(nc->mixsocket, Server_IP, ServerPort);
 	if (ret < 0)
 	{
 		// DTrace_FatalError("StartTcpServer -- Start Start TCP server fail, ServerPort=%d, error = %d, sys_err=%s\r\n", ServerPort, ret, GetNetCPIErrorMsg(ret));
 		NetNcClean(nc);
 		RETURN ret;
 	}
+	NetGetSockName(nc->mixsocket, &nc->Laddr);
 	RETURN 0;
 }
 

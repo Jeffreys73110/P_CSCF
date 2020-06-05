@@ -1,7 +1,7 @@
 #ifndef __NET_INTERFACE_H__
 #define __NET_INTERFACE_H__
 
-#include "module/DTrace/DTrace.h"
+#include "../DTrace/DTrace.h"
 
 #define SERVERDLG_GET_CALL_LIST_EVENT 0x01
 
@@ -235,7 +235,7 @@ private:
 	bool m_UnitTestFlag;
 
 public:
-	int StartNcServer(NetConnect_t *nc, int af_inet, int socket_type, WORD ServerPort, MIXS_CALLBACK lpFunction, void *lpObject, uint32_t Event);
+	int StartNcServer(NetConnect_t *nc, int af_inet, int socket_type, const char *Server_IP, WORD ServerPort, MIXS_CALLBACK lpFunction, void *lpObject, uint32_t Event);
 	// int StartTcpServer(NetConnect_t *nc, int af_inet, WORD ServerPort, MIXS_CALLBACK lpFunction, void *lpObject, uint32_t Event);
 	// int StartTcpClient(NetConnect_t *nc, int af_inet, WORD ServerPort, char *RIP, unsigned short RPort, bool keepalive, MIXS_CALLBACK lpFunction, void *lpObject, uint32_t Event);
 	// int StartUdpServer(NetConnect_t *nc, int af_inet, WORD ServerPort, MIXS_CALLBACK lpFunction, void *lpObject, uint32_t Event);

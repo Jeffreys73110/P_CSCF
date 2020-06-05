@@ -17,10 +17,10 @@
 // #include "CallServerDlg.h"
 // #include "MD5/Authentication.cpp"
 // #include "type_def.h"
-#include "../net_interface.h"
+#include "../module/net_interface/net_interface.h"
+#include "../module/sctp_client/sctp_client.h"
 
 /////////////////////////////////////////////////////////////////////////////
-
 // CSIP_Server dialog
 #define SIP_SERVER_EVENT WM_USER + 0x1233
 #define INVITE_EVENT WM_USER + 0x1234
@@ -36,7 +36,6 @@
 #define TIMERID_SUBSERVER_EVENT (TIMERID_INVITE + SIP_INVITE_SIZE)
 
 // SIP Server Port
-#define SIP_COMMAND_NO 10
 #define SIP_SERVER_PORT 5060
 #define SIP_SERVER_PORT_HTTP 80
 #define SERVER_PORT_NUM 1
@@ -101,6 +100,7 @@
 #define SIP_RECEIVED_LENGTH 200
 #define SIP_AUTH_LENGTH 300
 #define SIP_MSG_LEGNTH 4096
+#define SIP_URI_LENGTH 512
 
 // Via
 #define NOCHANGE_VIA 0
@@ -119,6 +119,25 @@
 
 #define SUBSERVER_DATA_SIZE (10 * SERVER_PORT_NUM)
 
+
+#define SIP_COMMAND_NO 13
+const char SIP_COMMAND[SIP_COMMAND_NO][20] =
+{
+	"REGISTER",		// SIP_COMMAND[0]
+	"INVITE",		// SIP_COMMAND[1]
+	"CANCEL",		// SIP_COMMAND[2]
+	"ACK",			// SIP_COMMAND[3]
+	"BYE",			// SIP_COMMAND[4]
+	"OPTIONS",		// SIP_COMMAND[5]
+	"REFER",		// SIP_COMMAND[6]
+	"NOTIFY",		// SIP_COMMAND[7]
+	"SUBSCRIBE",	// SIP_COMMAND[8]
+	"PUBLISH",		// SIP_COMMAND[9]
+	"PRACK",		// SIP_COMMAND[10]
+	"UPDATE",		// SIP_COMMAND[11]
+	"SIP/2.0"		// SIP_COMMAND[12]
+};
+	
 #define CDMS_DATA_SIZE 50
 typedef struct _CDMS_DATA
 {
@@ -166,11 +185,14 @@ struct SIP_MSG
 	// char TR_IP[SIP_URL_LENGTH], FR_IP[SIP_URL_LENGTH];
 
 	char CallerID[SIP_MSG_LENGTH], CSeq[SIP_MSG_LENGTH], Expires[SIP_MSG_LENGTH], Content_Length[SIP_MSG_LENGTH], Content_Type[SIP_MSG_LENGTH], Max_Forwards[SIP_MSG_LENGTH], Subject[SIP_MSG_LENGTH], User_Agent[SIP_MSG_LENGTH];
-	char WWW_Authenticate_Realm[SIP_AUTH_LENGTH], WWW_Authenticate_Nonce[SIP_AUTH_LENGTH], WWW_Authenticate_Algorithm[SIP_AUTH_LENGTH];
-	char Authorization_Algorithm[SIP_AUTH_LENGTH], Authorization_Nonce[SIP_AUTH_LENGTH], Authorization_Realm[SIP_AUTH_LENGTH], Authorization_Response[SIP_AUTH_LENGTH], Authorization_Uri[SIP_AUTH_LENGTH], Authorization_Username[SIP_AUTH_LENGTH];
+	char WWW_Authenticate_Realm[SIP_AUTH_LENGTH], WWW_Authenticate_Nonce[SIP_AUTH_LENGTH], WWW_Authenticate_Algorithm[SIP_AUTH_LENGTH], WWW_Authenticate_Opaque[SIP_AUTH_LENGTH], WWW_Authenticate_Qop[SIP_AUTH_LENGTH];
+	char Authorization_Algorithm[SIP_AUTH_LENGTH], Authorization_Nonce[SIP_AUTH_LENGTH], Authorization_Opaque[SIP_AUTH_LENGTH], Authorization_Realm[SIP_AUTH_LENGTH], Authorization_NC[SIP_AUTH_LENGTH], Authorization_CNonce[SIP_AUTH_LENGTH], Authorization_Qop[SIP_AUTH_LENGTH], Authorization_Response[SIP_AUTH_LENGTH], Authorization_Uri[SIP_AUTH_LENGTH], Authorization_Username[SIP_AUTH_LENGTH];
 	bool Authorization_Flag;
 	char Proxy_Authenticate_Realm[SIP_AUTH_LENGTH], Proxy_Authenticate_Nonce[SIP_AUTH_LENGTH], Proxy_Authenticate_Algorithm[SIP_AUTH_LENGTH];
-	char SDP[SIP_SDP_LENGTH], SDP_IP[SIP_URL_LENGTH], SDP_Port[SIP_PORT_LENGTH];
+	bool Supported_100rel, Supported_Replaces;
+	bool Require_100rel, Require_Replaces;
+	char RSeq[20];
+	char SDP[SIP_SDP_LENGTH], SDP_IP[SIP_URL_LENGTH], SDP_Audio_Port[SIP_PORT_LENGTH], SDP_Image_Port[SIP_PORT_LENGTH];
 	char ViaBuf[1000], RecordBuf[1000];
 	int Via_No;
 	bool UDP_C_Flag;
@@ -178,6 +200,10 @@ struct SIP_MSG
 	char Relay_TCP_IP[200], Relay_TCP_Port[200];
 	bool Forwarding_GW_Flag;
 	char Cancel_Branch[SIP_BRANCH_LENGTH]; // CANCEL's branch must be the same INVITE's branch
+	bool IMS_3GPP_Flag;					   // 3G, 4G, 5G
+	char P_Associated_URI[SIP_URI_LENGTH];
+	char FromPhoneId[50], ToPhoneId[50];
+
 
 	SIP_MSG()
 	{
@@ -200,11 +226,13 @@ struct SIP_MSG
 		FromDest.reset();
 		ToDest.reset();
 		CallerID[0] = CSeq[0] = Expires[0] = Content_Length[0] = Content_Type[0] = Max_Forwards[0] = Subject[0] = User_Agent[0] = 0;
-		WWW_Authenticate_Realm[0] = WWW_Authenticate_Nonce[0] = WWW_Authenticate_Algorithm[0] = 0;
-		Authorization_Algorithm[0] = Authorization_Nonce[0] = Authorization_Realm[0] = Authorization_Response[0] = Authorization_Uri[0] = Authorization_Username[0] = 0;
+		WWW_Authenticate_Realm[0] = WWW_Authenticate_Nonce[0] = WWW_Authenticate_Algorithm[0] = WWW_Authenticate_Qop[0] = WWW_Authenticate_Opaque[0] = 0;
+		Authorization_Algorithm[0] = Authorization_Nonce[0] = Authorization_Realm[0] = Authorization_NC[0] = Authorization_CNonce[0] = Authorization_Qop[0] = Authorization_Response[0] = Authorization_Uri[0] = Authorization_Username[0] = 0;
 		Authorization_Flag = false;
 		Proxy_Authenticate_Realm[0] = Proxy_Authenticate_Nonce[0] = Proxy_Authenticate_Algorithm[0] = 0;
-		SDP[SIP_SDP_LENGTH] = SDP_IP[0] = SDP_Port[0] = 0;
+		Supported_100rel = Supported_Replaces = false;
+		Require_100rel = Require_Replaces = false;
+		SDP[SIP_SDP_LENGTH] = SDP_IP[0] = SDP_Audio_Port[0] = SDP_Image_Port[0] = 0;
 		ViaBuf[0] = RecordBuf[0];
 		Via_No = 0;
 		UDP_C_Flag = false;
@@ -212,6 +240,9 @@ struct SIP_MSG
 		Relay_TCP_IP[0] = Relay_TCP_Port[0] = 0;
 		Forwarding_GW_Flag = false;
 		Cancel_Branch[0] = 0;
+		IMS_3GPP_Flag = false;
+		P_Associated_URI[0] = 0;
+		FromPhoneId[0] = ToPhoneId[0] = 0;
 	}
 };
 
@@ -236,6 +267,7 @@ typedef struct _SIP_ONLINE_DATA
 	// NetConnect_t Nc;
 	// sockaddr_mix Addr;
 	// char R_IP[64], V_IP[64];
+	char PhoneId[PHONENO_LEGNTH];	// for Auth
 	char PhoneNo[PHONENO_LEGNTH];
 	char Mobile[50];
 	char Password[50];
@@ -254,6 +286,7 @@ typedef struct _SIP_ONLINE_DATA
 	{
 		Flag = false;
 		Dest.reset();
+		PhoneId[0] = 0;
 		PhoneNo[0] = 0;
 		Mobile[0] = 0;
 		Password[0] = 0;
@@ -282,6 +315,10 @@ enum SIP_STATE
 	SIP_REG,
 	SIP_REFER,
 	SIP_NOTIFY,
+	SIP_PRACK,
+	SIP_UPDATE,
+	SIP_SUBSCRIBE,
+	SIP_PUBLISH,
 	SIP_ERROR,
 	SIP_TALK,
 	SIP_FAIL,
@@ -292,11 +329,42 @@ enum SIP_STATE
 	SIP_PROXY_AUTH,
 	SIP_ABANDON
 };
+
+const char Command_State_Table[21][20] = 
+{
+	"SIP_READY", 
+	"SIP_INVITE", 
+	"SIP_CANCEL", 
+	"SIP_BYE", 
+	"SIP_100", 
+	"SIP_REG", 
+	"SIP_REFER", 
+	"SIP_NOTIFY", 
+	"SIP_PRACK", 
+	"SIP_UPDATE",
+	"SIP_SUBSCRIBE", 
+	"SIP_PUBLISH", 
+	"SIP_ERROR", 
+	"SIP_TALK", 
+	"SIP_FAIL", 
+	"SIP_RELAY_CONNECT", 
+	"SIP_RELAY_READ", 
+	"SIP_200", 
+	"SIP_ACK", 
+	"SIP_PROXY_AUTH",
+	"SIP_ABANDON"
+};
+
 typedef struct _COMMAND_QUEUE
 {
 	SIP_STATE State;
 	SIP_MSG SIP_Msg, Response_SIP_Msg;
 	int Timer_Counter;
+	char FromPhoneId[50], ToPhoneId[50];
+	char From_SDP_IP[SIP_URL_LENGTH], From_External_SDP_IP[SIP_URL_LENGTH];
+	char To_SDP_IP[SIP_URL_LENGTH], To_External_SDP_IP[SIP_URL_LENGTH];
+	uint16_t	From_SDP_Audio_Port, From_SDP_Image_Port, From_External_SDP_Audio_Port, From_External_SDP_Image_Port;
+	uint16_t	To_SDP_Audio_Port, To_SDP_Image_Port, To_External_SDP_Audio_Port, To_External_SDP_Image_Port;
 	int Relay_Cur;
 	DEST_DATA Relay_TCP_Dest;
 	char Relay_UDP_IP[32], Relay_UDP_FPort[16], Relay_UDP_TPort[16];
@@ -306,6 +374,8 @@ typedef struct _COMMAND_QUEUE
 	int Abandon_Time;
 	BOOL Abandon_Flag; // int型態
 	MIXTIMER MixTimer;
+	// For 3GPP
+	bool	SipCqi1_Flag;
 
 	void reset()
 	{
@@ -313,6 +383,11 @@ typedef struct _COMMAND_QUEUE
 		SIP_Msg.reset();
 		Response_SIP_Msg.reset();
 		Timer_Counter = 0;
+		FromPhoneId[0] = ToPhoneId[0] = 0;
+		From_SDP_IP[0] = From_External_SDP_IP[0] = 0;
+		To_SDP_IP[0] = To_External_SDP_IP[0] = 0;
+		From_SDP_Audio_Port = From_SDP_Image_Port = From_External_SDP_Audio_Port = From_External_SDP_Image_Port = 0;
+		To_SDP_Audio_Port = To_SDP_Image_Port = To_External_SDP_Audio_Port = To_External_SDP_Image_Port = 0;
 		Relay_Cur = 0;
 		Relay_TCP_Dest.reset();
 		Relay_UDP_IP[0] = Relay_UDP_FPort[0] = Relay_UDP_TPort[0] = 0;
@@ -322,6 +397,7 @@ typedef struct _COMMAND_QUEUE
 		Abandon_Time = ABANDON_TIME;
 		Abandon_Flag = false;
 		memset(&MixTimer, 0, sizeof(MixTimer));
+		SipCqi1_Flag = false;
 	}
 } COMMAND_QUEUE, *pCOMMAND_QUEUE;
 
@@ -432,7 +508,6 @@ public:
 	char ErrMsg[200];
 
 	// System Variable
-	char SIP_COMMAND[SIP_COMMAND_NO][20];
 	char Command[COMMAND_NUM][COMMAND_LEN];
 	SIP_MSG SIP_Msg, SIP_Msg2;
 	COMMAND_QUEUE Command_Data[COMMAND_QUEUE_SIZE];
@@ -446,7 +521,7 @@ public:
 	// sockaddr_mix NTUT_GW_Addr;
 	// NetConnect_t NTUT_GW_Nc;
 	// CRYPTO_TYPE NTUT_GW_Crypto_Type;
-	char Local_IP[100], Outbound_PhoneNo[100], Log_File[100], Search_PhoneNo[100];
+	char Local_IP[64], Outbound_PhoneNo[100], Log_File[100], Search_PhoneNo[100];
 	char *lpSIP_Event_Table[600];
 	char ReplaceCode_Table[100][2][PHONENO_LEGNTH];
 	int ReplaceCode_Num;
@@ -486,6 +561,12 @@ public:
 	DEST_DATA SubServer_Data[SUBSERVER_DATA_SIZE];
 	// char Main_Server_IP[100], Sub_Server_IP[2][100];
 	bool Access_CDMS_Flag;
+	char S1AP_Server_IP[64];
+	uint16_t S1AP_Server_Port;
+	int	S1AP_Socket;
+	struct sockaddr_in S1AP_Addr;
+	bool SIP_Alg_Flag;
+
 
 	//====================================== Function ======================================
 	//=====----- SIP_Server Function -----=====
@@ -502,9 +583,12 @@ public:
 	void Process_STATUS(SIP_MSG *lpSIP_Msg);
 	void Process_CANCEL(SIP_MSG *lpSIP_Msg);
 	void Process_PRACK(SIP_MSG *lpSIP_Msg);
+	void Process_UPDATE(SIP_MSG *lpSIP_Msg);
 	void Process_BYE(SIP_MSG *lpSIP_Msg);
 	void Process_REFER(SIP_MSG *lpSIP_Msg);
 	void Process_NOTIFY(SIP_MSG *lpSIP_Msg);
+	void Process_SUBSCRIBE(SIP_MSG *lpSIP_Msg);
+	void Process_PUBLISH(SIP_MSG *lpSIP_Msg);
 	void Process_SIP_Error(SIP_MSG *lpSIP_Msg, int Error_Code);
 	int Invite_Proc(int Send_Flag, SIP_MSG *lpSIP_Msg, SIP_STATE State, const char *Command = NULL);
 	// //----- UI -----
@@ -531,6 +615,7 @@ public:
 	bool ReplaceCode_Filter(SIP_MSG *lpSIP_Msg);
 	//----- Modify Message -----
 	int Modify_SDP(SIP_MSG *lpData, char *IP, char *FPort, char *TPort);
+	int Modify_SDP(SIP_MSG *lpData, char *IP, uint16_t FPort, uint16_t TPort);
 	int Modify_Param(char *S1, const char *Head, char *Param);
 	int Modify_Expires(SIP_MSG *lpData, int Step);
 	int Modify_NOTIFY(SIP_MSG *lpSIP_Msg);
@@ -545,11 +630,18 @@ public:
 	int Delete_Via111(char *S1, char *ViaBuf);
 	int Add_Via111(char *S1, char *Port, const char *Branch);
 	int Deletion(char *S1, int Beg, int End);
+	int Deletion(char *S1, size_t S1_size, int Beg, int End);
 	int Insertion(char *S1, int Beg, const char *Buf);
+	int Insertion(char *S1, size_t S1_size, int Beg, const char *Buf);
+	int Edition(char *S1, size_t S1_size, int Beg, int End, const char *Buf);
 	int Remove_Via(char *S1, char *ViaBuf);
 	int Recover_Via(char *S1, char *ViaBuf);
 	int Modify_CSeq(char *S1, const char *Head);
 	int Delete_OneLine(char *S1, const char *Head);
+	int Add_Header(char *Cmd_Msg, size_t CM_size, const char *Header, const char *Field, const char *Upper_Head1, const char *Upper_Head2);
+	int Delete_Param(char *S1, size_t S1_size, const char *Head);
+	int Edit_URL(char *S1, size_t S1_size, const char *Head, const char *URL);
+	int Edit_Port(char *S1, size_t S1_size, const char *Head, const char *Port);
 	//----- String Analysis -----
 	int Filter_String(char *S1, const char *S2, char *Name, char *URL, char *Port, char *Tag, char *Branch, char *expires, BOOL *Flag); //, int *Name_Locate);
 	int Get_Field(char *S1, const char *Head, char *Field);																				//int *No);
@@ -560,6 +652,9 @@ public:
 	int Get_NextLine(char *S1);
 	int Extract_Param(char *S1, const char *Head, char *Param);
 	int Get_Via(char *S1, char *ViaBuf);
+	int Get_Line_Field(char *S1, const char *Head, char *Field, size_t Field_size);
+	int Get_Supported(bool Support_Require, char *S1, SIP_MSG *lpSIP_Msg);
+
 	// //----- Monitor -----
 	// int		Init_Monitor();
 	// int		Check_Monitor(SIP_MSG *lpSIP_Data);
@@ -572,6 +667,7 @@ public:
 	int Get_Network_Mothod(const char *Head, const SIP_MSG *lpSIP_Msg, CRYPTO_TYPE &Crypto_Type);
 	//----- Online Data Process -----
 	int Init_OnLine();
+	int Show_OnLine();
 	int Check_OnLine(char *PhoneNo, sockaddr_mix *Addr = NULL);
 	int Save_OnLine(SIP_MSG *lpData, int Flag);
 	int Clear_OnLine(SIP_MSG *lpData);
@@ -614,6 +710,7 @@ public:
 	//----- CDMS Data -----
 	int Init_CDMS_Data();
 	int Check_CDMS_Data(const char *Account);
+	int Check_CDMS_Data_By_Id(const char *Id);
 	int Save_CDMS_Data(const CDMS_DATA *lpCdms);
 	int Clear_CDMS_Data(int Cur);
 	//----- Authenrozation -----
@@ -631,10 +728,12 @@ public:
 	//----- Otherwise -----
 	int Send_Relay_Command(const char *Command, SIP_MSG *lpSIP_Msg, COMMAND_QUEUE *lpCommand);
 	int Send_SIP_Command(const char *Command, SIP_MSG *lpData, int Via_Flag, int Send_Flag);
+	int Send_SIPCQI1_Command(COMMAND_QUEUE *lpCommand, char* s1ap_server_ip, uint16_t s1ap_server_port);
 	int Get_Response_Code(char *Response_Code, int Code);
 	bool Addrcmp(sockaddr_mix *lpAddr1, sockaddr_mix *lpAddr2);
 	// int		Create_Directory(char *szPath);
 	int Send_Auth_Msg(const char *Command, SIP_MSG *lpSIP_Data, int Via_Flag, int Send_Flag);
+	char *transfer_imsi_data_format(const char *str_imsi, char *hexstr_imsi);
 
 	//----------------------------------------------------------------------
 	int Check_Flow_State(SIP_MSG *lpSIP_Msg, bool Transmission_Flag);
@@ -654,14 +753,14 @@ public:
 	bool Port_Filter(char *Port);
 	int Trunk_GW_Set(DEST_DATA *lpTrunk_GW, char *Url);
 	int Update_Trunk_GW(char *Old_GW_IP, unsigned short Old_GW_Port);
-	int Edit_URL(char *S1, const char *Head, char *URL);
-	int Edition(char *S1, int Beg, int End, char *Buf);
-	int Edit_Port(char *S1, const char *Head, char *Port);
 	int Command_Process(char *S1, char *Command, char Flag, int Command_Num, int Command_Len);
 	int Txt_HSF(char *Buf, int Len);
 	int HSF_Txt(char *Buf, int Len1);
 	int Hsf_recv(SOCKET Socket, char *Buf, int Len, int Flag);
 	int Hsf_send(SOCKET Socket, char *Buf1, int Len, int Flag);
+
+	// Test
+	void res_auth_401(char *S44, char *S11);
 
 	// // Dialog Data
 	// 	//{{AFX_DATA(CSIP_Server)

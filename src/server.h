@@ -16,11 +16,11 @@
 // #include "s1ap_decode.h"
 // #include "s1ap_encode.h"
 // #include "mme.h"
-#include "Jfunction.h"
+// #include "Jfunction.h"
 // #include "timer.h"
 // #include "DlgQuery.h"
 #include "module/DTrace/DTrace.h"
-#include "net_interface.h"
+#include "module/net_interface/net_interface.h"
 #include "SIP_Server/SIP_Server.h"
 
 #endif // __SERVER_H__

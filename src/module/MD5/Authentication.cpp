@@ -24,6 +24,19 @@ int	MD5(char *Algorithm,    char *Method,char *From_Name,char *From_URL,char *Fr
 	return 0;
 }
 
+int	MD5_M(char *Algorithm,char *Method,char *From_Name,char *From_URL,char *From_Password,char *Realm, char *Nonce,char *NC,char *CNonce,char *Qop,char *Response)
+{	
+    HASHHEX HA1 = "";
+    HASHHEX HA2 = "";
+    HASHHEX Response1;
+
+    DigestCalcHA1(Algorithm, From_Name, Realm, From_Password, Nonce, CNonce, HA1);
+    DigestCalcResponse(HA1, Nonce, NC, CNonce, Qop, Method, From_URL, HA2, Response1);
+	strcpy(Response,Response1);
+
+	return 0;
+}
+
 
 void CvtHex( IN HASH Bin, OUT HASHHEX Hex)
 {
@@ -100,14 +113,14 @@ void DigestCalcResponse(
 #ifdef AUTH_INT_SUPPORT                   
 		while (index!=NULL&&index-pszQop>=5&&strlen(index)>=3)
 		{	if (_strnicmp(index-5, "auth-int",8) == 0)
-			{	goto auth_withqop;	}
+			{	goto auth_withqop_authint;	}
 			index = strchr(index+1,'i');
 		}
 
-		//strchr(pszQop,'a');
+		index = strchr(pszQop,'a');
 		while (index!=NULL&&strlen(index)>=4)
 		{
-			if (_strnicmp(index-5, "auth",4) == 0)
+			if (_strnicmp(index, "auth",4) == 0)
 			{
 				goto auth_withqop;
 			}
@@ -131,9 +144,10 @@ auth_withoutqop:
 
 	goto end;
 
-auth_withqop:
+auth_withqop_authint:
 	MD5Update(&Md5Ctx, (BYTE *)":", 1);
 	MD5Update(&Md5Ctx, (BYTE *)HEntity, HASHHEXLEN);
+auth_withqop:
 	MD5Final((BYTE *)HA2, &Md5Ctx);
 	CvtHex(HA2, HA2Hex);
 

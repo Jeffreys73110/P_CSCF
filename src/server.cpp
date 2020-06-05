@@ -109,7 +109,7 @@ int main()
 	DTrace_CommonMsg("SIP Proxy Server\r\n"
 					 "Searching SQL ....\r\n",
 					 "Completely[%s]\r\n",
-					 Jstringftime(timestr, "%Y/%m/%d %H:%M:%S", NULL)->c_str());
+					 Jstringftime(timestr, "%Y/%m/%d %H:%M:%S", NULL).c_str());
 
 	CSIP_Server *lpSIP_Server = new CSIP_Server();
 	if (lpSIP_Server->Start() < 0)

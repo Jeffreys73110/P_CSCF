@@ -84,6 +84,12 @@ CSIP_Server::~CSIP_Server()
 	SIP_Msg2.FromDest.clean_nc();
 	SIP_Msg2.ToDest.clean_nc();
 	SIP_Msg2.reset();
+
+	if (S1AP_Socket)
+	{
+		sctp_disconnect(S1AP_Socket);
+		S1AP_Socket = 0;
+	}
 }
 
 // void CSIP_Server::DoDataExchange(CDataExchange* pDX)
@@ -177,6 +183,9 @@ int CSIP_Server::Start()
 
 	// Initial Variable
 	Write_Flag = FALSE;
+	S1AP_Server_IP[0] = 0;
+	S1AP_Server_Port = 0;
+	SIP_Alg_Flag = false;
 	// GetDlgItem(IDC_BUTTON1)->SetWindowText("Enable Log File");
 	Relay_100_Flag = 0;
 	sprintf(S1, "Relay Level %d", Relay_100_Flag);
@@ -188,9 +197,19 @@ int CSIP_Server::Start()
 	Access_CDMS_Flag = FALSE;
 	m_lpNetIF = NULL;
 
+	//Initial Data
+	Init_Command();
+	// Init_Monitor();
+	Init_OnLine();
+	Init_Invite();
+	Init_SubServer_Mapping();
+	Init_SubServer_Data();
+	Init_CDMS_Data();
+
 	// Set lpSIP_Event_Table
 	lpSIP_Event_Table[0] = 0;
 	Get_Response_Code(NULL, 0);
+
 	// Get Current Directory
 	// GetCurrentDirectory(_MAX_PATH,Current_Directory);
 	getcwd(Current_Directory, PATH_MAX);
@@ -198,19 +217,31 @@ int CSIP_Server::Start()
 	// Get Local_IP
 	// WSADATA Data;
 	// WSAStartup(0x202,&Data);
-	hostent *lpHostEnt;
-	gethostname(S1, sizeof(S1));
-	if ((lpHostEnt = gethostbyname(S1)) != NULL)
-	{
-		for (k = 0; *(lpHostEnt->h_addr_list + k + 1) != 0; k++)
-			;
-		strcpy(Local_IP, inet_ntoa(*(LPIN_ADDR) * (lpHostEnt->h_addr_list + k)));
-	}
-	else
-		Local_IP[0] = 0;
+	// hostent *lpHostEnt;
+	// gethostname(S1, sizeof(S1));
+	// if ((lpHostEnt = gethostbyname(S1)) != NULL)
+	// {
+	// 	k = 0;
+	// 	while (*(lpHostEnt->h_addr_list + k + 1) != 0)
+	// 		k++;
+	// 	strcpy(Local_IP, inet_ntoa(*(LPIN_ADDR) * (lpHostEnt->h_addr_list + k)));
+	// }
+	// else
+	// 	Local_IP[0] = 0;
+	// DTrace_TestMsg("Local_IP=%s\n", Local_IP);
 
 	// Get Initial Param
 	Update_SIP_Server_Param((char *)"GET");
+	DTrace_TestMsg("Local_IP=%s\n", Local_IP);
+
+	// Start sctp connect
+	if (S1AP_Server_IP[0])	
+	{
+		printf("SCPT Connect to S1ap Server\n");
+		sctp_connect(S1AP_Socket, &S1AP_Addr);
+	}
+	else	
+		S1AP_Socket = 0;
 
 	// Start UDP Server
 	Server_Port_Num = 0;
@@ -222,7 +253,7 @@ int CSIP_Server::Start()
 		{
 			if ((SIP_Server_Port[j] = Port[j]) == 0)
 				break;
-			if (m_lpNetIF->StartNcServer(&SIP_Server_Nc[j], AF_INET, SOCK_DGRAM, SIP_Server_Port[j], SocketModule_Callbcak_Function, this, SIP_SERVER_EVENT) < 0)
+			if (m_lpNetIF->StartNcServer(&SIP_Server_Nc[j], AF_INET, SOCK_DGRAM, NULL, SIP_Server_Port[j], SocketModule_Callbcak_Function, this, SIP_SERVER_EVENT) < 0)
 				DTrace_Error("Start UDP(%d) Server Err\n", SIP_Server_Port[j]);
 			else
 				DTrace_TestMsg("Start UDP(%d) Server OK\n", SIP_Server_Port[j]);
@@ -242,14 +273,7 @@ int CSIP_Server::Start()
 	// sprintf(Log_File,"%s",m_Log_File);
 	// UpdateData(FALSE);
 
-	//Initial Data
-	Init_Command();
-	// Init_Monitor();
-	Init_OnLine();
-	Init_Invite();
-	Init_SubServer_Mapping();
-	Init_SubServer_Data();
-	Init_CDMS_Data();
+	
 
 	// // Initial CDMS/Location Pointer
 	// if ((lpSIP_Server_Setup=new CSIP_Server_Setup(this))!=NULL)	{ }
@@ -261,21 +285,9 @@ int CSIP_Server::Start()
 	// tcItem.mask = TCIF_TEXT; strcpy(S1,"REGISTER"); tcItem.pszText = S1; tcItem.cchTextMax = strlen(S1); m_Tab1.InsertItem(3,&tcItem);
 	// tcItem.mask = TCIF_TEXT; strcpy(S1,"INVITE"); tcItem.pszText = S1; tcItem.cchTextMax = strlen(S1); m_Tab1.InsertItem(4,&tcItem);
 
-	// Initial and STart SIP Server
-	strcpy(&SIP_COMMAND[0][0], "REGISTER");
-	strcpy(&SIP_COMMAND[1][0], "INVITE");
-	strcpy(&SIP_COMMAND[2][0], "CANCEL");
-	strcpy(&SIP_COMMAND[3][0], "ACK");
-	strcpy(&SIP_COMMAND[4][0], "BYE");
-	strcpy(&SIP_COMMAND[5][0], "OPTIONS");
-	strcpy(&SIP_COMMAND[6][0], "REFER");
-	strcpy(&SIP_COMMAND[7][0], "NOTIFY");
-	strcpy(&SIP_COMMAND[8][0], "PRACK");
-	strcpy(&SIP_COMMAND[9][0], "SIP/2.0");
 
 	// Reload CDMS Data
 	Set_User_Accont();
-
 
 	RETURN 0;
 }
@@ -335,12 +347,18 @@ void CSIP_Server::OnSIP_Server(NetConnect_t *wParam, long lParam)
 				Process_CANCEL(&SIP_Msg);
 			else if (!strcmp(SIP_Msg.Command, "PRACK"))
 				Process_PRACK(&SIP_Msg);
+			else if (!strcmp(SIP_Msg.Command, "UPDATE"))
+				Process_PRACK(&SIP_Msg);
 			else if (!strcmp(SIP_Msg.Command, "BYE"))
 				Process_BYE(&SIP_Msg);
 			else if (!strcmp(SIP_Msg.Command, "REFER"))
 				Process_REFER(&SIP_Msg);
 			else if (!strcmp(SIP_Msg.Command, "NOTIFY"))
 				Process_NOTIFY(&SIP_Msg);
+			else if (!strcmp(SIP_Msg.Command, "SUBSCRIBE"))
+				Process_SUBSCRIBE(&SIP_Msg);
+			else if (!strcmp(SIP_Msg.Command, "PUBLISH"))
+				Process_PUBLISH(&SIP_Msg);
 			else if ((SIP_Msg.Command[0] >= '0') && (SIP_Msg.Command[0] <= '9'))
 				Process_STATUS(&SIP_Msg);
 		}
@@ -360,15 +378,18 @@ void CSIP_Server::OnSIP_Server(NetConnect_t *wParam, long lParam)
 // -------------------------------------------------
 void CSIP_Server::Process_SIP_Error(SIP_MSG *lpSIP_Msg, int Error_Code)
 {
+	CRASH_DEBUG_COMMAND;
 	char Status_Code[10];
 
 	sprintf(Status_Code, "%d", Error_Code);
 	Send_SIP_Command(Status_Code, lpSIP_Msg, NOCHANGE_VIA, FROM);
 	Invite_Proc(TO, lpSIP_Msg, SIP_ERROR, Status_Code);
+	RETURN;
 }
 
 void CSIP_Server::Process_CANCEL(SIP_MSG *lpSIP_Msg)
 {
+	CRASH_DEBUG_COMMAND;
 	int Cur;
 
 	// 1. Duplicated "CANCEL"
@@ -390,35 +411,13 @@ void CSIP_Server::Process_CANCEL(SIP_MSG *lpSIP_Msg)
 	{
 		Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
 	} // Via OK
-}
-
-void CSIP_Server::Process_PRACK(SIP_MSG *lpSIP_Msg)
-{
-	int Cur;
-
-	// 1. Duplicated "PRACK"
-	if ((Cur = Check_Command(lpSIP_Msg)) >= 0)
-		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
-
-	// 2. PRACK Request: Forwarding
-	else if (lpSIP_Msg->ToDest.is_used() && ((Cur = Save_Command(lpSIP_Msg)) >= 0))
-	{ // Check if INVITE Process Exist
-		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
-		//SetTimer(TIMERID_COMMAND+Cur,TWO_SECOND,NULL);
-		//Invite_Proc(FROM, lpSIP_Msg, SIP_READY);
-		//Command_Data[Cur].State=SIP_PRACK; Command_Data[Cur].Timer_Counter=0;
-	}
-
-	// 3. To: OffLine or Command Buffer Full
-	else
-	{
-		Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
-	} // Via OK
+	RETURN;
 }
 
 // ----------------------------------------------
 void CSIP_Server::Process_BYE(SIP_MSG *lpSIP_Msg)
 {
+	CRASH_DEBUG_COMMAND;
 	int Cur111, Cur;
 	SIP_MSG SIP_Data;
 	char S1[100];
@@ -461,11 +460,13 @@ void CSIP_Server::Process_BYE(SIP_MSG *lpSIP_Msg)
 	{
 		Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
 	} // Via OK
+	RETURN;
 }
 
 // ----------------------------------------------
 void CSIP_Server::Process_REFER(SIP_MSG *lpSIP_Msg)
 {
+	CRASH_DEBUG_COMMAND;
 	int Cur;
 
 	// 1. Duplicated "REFER"
@@ -486,10 +487,92 @@ void CSIP_Server::Process_REFER(SIP_MSG *lpSIP_Msg)
 	{
 		Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
 	} // Via OK
+	RETURN;
 }
+
+void CSIP_Server::Process_PRACK(SIP_MSG *lpSIP_Msg)
+{
+	CRASH_DEBUG_COMMAND;
+	int Cur;
+
+	// 1. Duplicated "PRACK"
+	if ((Cur = Check_Command(lpSIP_Msg)) >= 0)
+		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+
+	// 2. PRACK Request: Forwarding
+	else if (lpSIP_Msg->ToDest.is_used())
+	{ 
+		if ((Cur = Save_Command(lpSIP_Msg)) >= 0)
+		{
+			// Check if INVITE Process Exist
+			Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+			//SetTimer(TIMERID_COMMAND+Cur,TWO_SECOND,NULL);
+			//Invite_Proc(FROM, lpSIP_Msg, SIP_READY);
+			//Command_Data[Cur].State=SIP_PRACK; Command_Data[Cur].Timer_Counter=0;
+			m_lpNetIF->SetTimer(&Command_Data[Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Cur);
+			Command_Data[Cur].State = SIP_PRACK;
+			Command_Data[Cur].Timer_Counter = 0;
+		}
+		else
+			Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
+	}
+	else
+		Send_SIP_Command("404", lpSIP_Msg, NOCHANGE_VIA, FROM);
+
+	RETURN;
+}
+
+void CSIP_Server::Process_UPDATE(SIP_MSG *lpSIP_Msg)
+{
+	CRASH_DEBUG_COMMAND;
+	int Cur,Cur2;
+	SIP_MSG tempSIP_Msg;
+
+	if (SIP_Alg_Flag)
+	{
+		memcpy(&tempSIP_Msg, lpSIP_Msg, sizeof(tempSIP_Msg));
+		Jstrcpy(tempSIP_Msg.Command, "INVITE");
+		if ((Cur2 = Check_Command(&tempSIP_Msg)) >= 0)
+		{
+			// External sdp ip and port
+			char sdp_ip[64];
+			uint16_t diff_port = ntohs(lpSIP_Msg->FromDest.Raddr.sin_port)-5060+2;
+			NetMakeAddrStr(lpSIP_Msg->FromDest.Raddr, sdp_ip);
+			// Jstrcpy(Command_Data[Cur2].From_External_SDP_IP, sdp_ip);
+			// Command_Data[Cur2].From_External_SDP_Audio_Port = Jatoi(lpSIP_Msg->SDP_Audio_Port) + diff_port;
+			// Command_Data[Cur2].From_External_SDP_Image_Port = Jatoi(lpSIP_Msg->SDP_Image_Port) + diff_port;
+			Modify_SDP(lpSIP_Msg, Command_Data[Cur2].From_External_SDP_IP, Command_Data[Cur2].From_External_SDP_Audio_Port, Command_Data[Cur2].From_External_SDP_Audio_Port);
+		}
+	}
+
+	// 1. Duplicated "UPDATE"
+	if ((Cur = Check_Command(lpSIP_Msg)) >= 0)
+		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+
+	// 2. UPDATE Request: Forwarding
+	else if (lpSIP_Msg->ToDest.is_used())
+	{ 
+		if ((Cur = Save_Command(lpSIP_Msg)) >= 0)
+		{
+			// Check if INVITE Process Exist
+			Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+			m_lpNetIF->SetTimer(&Command_Data[Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Cur);
+			Command_Data[Cur].State = SIP_UPDATE;
+			Command_Data[Cur].Timer_Counter = 0;
+		}
+		else
+			Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
+	}
+	else
+		Send_SIP_Command("404", lpSIP_Msg, NOCHANGE_VIA, FROM);
+
+	RETURN;
+}
+
 
 void CSIP_Server::Process_NOTIFY(SIP_MSG *lpSIP_Msg)
 {
+	CRASH_DEBUG_COMMAND;
 	int Cur;
 
 	Modify_NOTIFY(lpSIP_Msg);
@@ -497,20 +580,92 @@ void CSIP_Server::Process_NOTIFY(SIP_MSG *lpSIP_Msg)
 	if ((Cur = Check_Command(lpSIP_Msg)) >= 0)
 		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
 
-	// 2. NOTIFY Request: Forwarding
-	else if (lpSIP_Msg->ToDest.is_used() && ((Cur = Save_Command(lpSIP_Msg)) >= 0))
-	{ // Check if INVITE Process Exist
-		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
-		m_lpNetIF->SetTimer(&Command_Data[Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Cur);
-		Command_Data[Cur].State = SIP_NOTIFY;
-		Command_Data[Cur].Timer_Counter = 0;
-	}
+	// Notify to server
+	else if (!strcmp(lpSIP_Msg->From_Name, lpSIP_Msg->To_Name))
+		Send_SIP_Command("200", lpSIP_Msg, NOCHANGE_VIA, FROM);
 
-	// 3. To: OffLine or Command Buffer Full
-	else
+	// 2. NOTIFY Request: Forwarding
+	else if (lpSIP_Msg->ToDest.is_used())
 	{
-		Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
-	} // Via OK
+		if ((Cur = Save_Command(lpSIP_Msg)) >= 0)
+		{
+			// Check if INVITE Process Exist
+			Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+			m_lpNetIF->SetTimer(&Command_Data[Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Cur);
+			Command_Data[Cur].State = SIP_NOTIFY;
+			Command_Data[Cur].Timer_Counter = 0;
+		}
+		else
+			Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
+	}
+	else
+		Send_SIP_Command("404", lpSIP_Msg, NOCHANGE_VIA, FROM);
+
+	RETURN;
+}
+
+void CSIP_Server::Process_SUBSCRIBE(SIP_MSG *lpSIP_Msg)
+{
+	CRASH_DEBUG_COMMAND;
+	int Cur;
+
+	// 1. Duplicated "SBUSCRIBE"
+	if ((Cur = Check_Command(lpSIP_Msg)) >= 0)
+		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+
+	// Subscribe to server
+	else if (!strcmp(lpSIP_Msg->From_Name, lpSIP_Msg->To_Name))
+		Send_SIP_Command("200", lpSIP_Msg, NOCHANGE_VIA, FROM);
+
+	// 2. SBUSCRIBE Request: Forwarding
+	else if (lpSIP_Msg->ToDest.is_used())
+	{
+		if ((Cur = Save_Command(lpSIP_Msg)) >= 0)
+		{
+			Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+			m_lpNetIF->SetTimer(&Command_Data[Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Cur);
+			Command_Data[Cur].State = SIP_SUBSCRIBE;
+			Command_Data[Cur].Timer_Counter = 0;
+		}
+		else
+			Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
+	}
+	else
+		Send_SIP_Command("404", lpSIP_Msg, NOCHANGE_VIA, FROM);
+
+	RETURN;
+}
+
+void CSIP_Server::Process_PUBLISH(SIP_MSG *lpSIP_Msg)
+{
+	CRASH_DEBUG_COMMAND;
+	int Cur;
+
+	// 1. Duplicated "PUBLISH"
+	if ((Cur = Check_Command(lpSIP_Msg)) >= 0)
+		Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+
+	// Publish to server
+	else if (!strcmp(lpSIP_Msg->From_Name, lpSIP_Msg->To_Name))
+		Send_SIP_Command("200", lpSIP_Msg, NOCHANGE_VIA, FROM);
+
+	// 2. PUBLISH Request: Forwarding
+	else if (lpSIP_Msg->ToDest.is_used())
+	{
+		if ((Cur = Save_Command(lpSIP_Msg)) >= 0)
+		{
+			Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, ADD_VIA, TO);
+			m_lpNetIF->SetTimer(&Command_Data[Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Cur);
+			Command_Data[Cur].State = SIP_PUBLISH;
+			Command_Data[Cur].Timer_Counter = 0;
+		}
+		else
+			Send_SIP_Command("503", lpSIP_Msg, NOCHANGE_VIA, FROM);
+	}
+	else
+		Send_SIP_Command("404", lpSIP_Msg, NOCHANGE_VIA, FROM);
+
+	RETURN;
 }
 
 // ---------------------------------------------------
@@ -554,6 +709,7 @@ void CSIP_Server::Process_REGISTER(SIP_MSG *lpSIP_Msg)
 		Reg_CNonce_Check = FALSE;
 	}
 
+	CRASH_DEBUG_COMMAND;
 	if ((Online_Cur = Check_OnLine(lpSIP_Msg->From_Name)) >= 0)
 	{
 		First_Flag = FALSE;
@@ -599,6 +755,7 @@ void CSIP_Server::Process_REGISTER(SIP_MSG *lpSIP_Msg)
 
 	if ((Command_Cur = Check_Command(lpSIP_Msg)) >= 0 && Command_Data[Command_Cur].State == SIP_REG)
 	{
+		DTrace_TestMsg("Process_REGISTER, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Command_Cur].State], __LINE__, __FILE__);
 		if (!SIP_OnLine_Data[Online_Cur].MD5_OK)
 		{
 			CRASH_DEBUG_COMMAND;
@@ -620,10 +777,10 @@ void CSIP_Server::Process_REGISTER(SIP_MSG *lpSIP_Msg)
 		}
 		// SIP_REG -> SIP_RELAY: 帳號存在, MD5 驗證 OK
 		else
-		{ // Modify Expires
+		{ 
+			// Modify Expires
 			if (!First_Flag && Modify_Expire_Check)
 			{
-				CRASH_DEBUG_COMMAND;
 				SIP_OnLine_Data[Online_Cur].Expires_Real = PriOnline_Data.Expires_Counter; // 紀錄實際之 Expires 值
 				if (Progressive_Expires_Check)
 				{
@@ -642,7 +799,6 @@ void CSIP_Server::Process_REGISTER(SIP_MSG *lpSIP_Msg)
 				else if (Locking_Expires > 0)
 					Modify_Expires(lpSIP_Msg, Locking_Expires);
 			}
-			CRASH_DEBUG_COMMAND;
 			Save_OnLine(lpSIP_Msg, FROM); //Already Online
 			m_lpNetIF->KillTimer(&Command_Data[Command_Cur].MixTimer);
 			Send_Auth_Msg("200", lpSIP_Msg, NOCHANGE_VIA, FROM); // Via OK
@@ -660,6 +816,7 @@ void CSIP_Server::Process_REGISTER(SIP_MSG *lpSIP_Msg)
 	// Register without Authenticate Digest or First Authenticate
 	else
 	{
+		DTrace_TestMsg("Process_REGISTER, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Command_Cur].State], __LINE__, __FILE__);
 		// SIP_READY -> SIP_REG: Must authencation
 		if (!Reg_NoAuth_Flag)
 		{
@@ -757,6 +914,10 @@ void CSIP_Server::Process_Proxy_Auth(SIP_MSG *lpSIP_Msg)
 	}
 	if (Online_Cur >= 0)
 	{
+		// Get FromPhoneId
+		Jstrcpy(lpSIP_Msg->FromPhoneId, SIP_OnLine_Data[Online_Cur].PhoneId);
+		DTrace_TestMsg("Process_Proxy_Auth, lpSIP_Msg->FromPhoneId=%s, %d @ %s\r\n", lpSIP_Msg->FromPhoneId, __LINE__, __FILE__);
+		// Authenticate
 		Check_MD5(lpSIP_Msg, Online_Cur, FALSE);
 		if (Proxy_Auth_Level == 0)
 			SIP_OnLine_Data[Online_Cur].Proxy_MD5_OK = TRUE;
@@ -771,12 +932,14 @@ void CSIP_Server::Process_Proxy_Auth(SIP_MSG *lpSIP_Msg)
 			Proxy_Auth && (Proxy_RMD5_Check && SIP_OnLine_Data[Online_Cur].MD5_OK) ||								//當Reg認證OK則不做Proxy認證
 			Proxy_Auth && (strlen(lpSIP_Msg->Authorization_Nonce) > 0 && SIP_OnLine_Data[Online_Cur].Proxy_MD5_OK); //Pass with Proxy Auth OK
 		Proxy_ANonce_Flag = Proxy_Auth && !Proxy_RMD5_Check && Proxy_CNonce_Check && Vary_Flag;
-		DTrace_CommonMsg("Online_Cur>=0, =%d\r\n", Online_Cur);
+		DTrace_CommonMsg("Online_Cur=%d, %d @ %s\r\n", Online_Cur, __LINE__, __FILE__);
 	}
 
 	// Command Already On-Process
 	if ((Command_Cur = Check_Command(lpSIP_Msg)) >= 0 && Command_Data[Command_Cur].State == SIP_PROXY_AUTH)
-	{ // SIP_REG -> SIP_REG: REGISTER(Duplicate)
+	{ 
+		DTrace_TestMsg("Process_Proxy_Auth, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Command_Cur].State], __LINE__, __FILE__);
+		// SIP_REG -> SIP_REG: REGISTER(Duplicate)
 		m_lpNetIF->SetTimer(&Command_Data[Command_Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Command_Cur);
 		if (Proxy_ANonce_Flag)
 			Proc_Auth(lpSIP_Msg, Command_Cur, Online_Cur, "407"); // Reassign new Nonce
@@ -806,11 +969,13 @@ void CSIP_Server::Process_Proxy_Auth(SIP_MSG *lpSIP_Msg)
 
 	// SIP_READY/SIP_PROXY_AUTH -> SIP_PROXY_AUTH: Check Proxy_Authorization
 	else if (!Proxy_NoAuth_Flag)
-	{ // Restore Partial Dial-No. function for Auth.
+	{ 
+		DTrace_TestMsg("Process_Proxy_Auth, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Command_Cur].State], __LINE__, __FILE__);
+		// Restore Partial Dial-No. function for Auth.
 		if ((Invite_Cur = Check_Invite(lpSIP_Msg)) >= 0 && strlen(SIP_Invite_Data[Invite_Cur].Partial_PhoneNo) > 0)
 		{
-			strcpy(lpSIP_Msg->To_Name, SIP_Invite_Data[Invite_Cur].Partial_PhoneNo);
-			strcpy(lpSIP_Msg->Command_Name, SIP_Invite_Data[Invite_Cur].Partial_PhoneNo);
+			Jstrcpy(lpSIP_Msg->To_Name, SIP_Invite_Data[Invite_Cur].Partial_PhoneNo);
+			Jstrcpy(lpSIP_Msg->Command_Name, SIP_Invite_Data[Invite_Cur].Partial_PhoneNo);
 			Edit_Name(lpSIP_Msg->Cmd_Str, "INVITE", lpSIP_Msg->To_Name);
 			Edit_Name(lpSIP_Msg->Cmd_Str, "To:", SIP_Invite_Data[Invite_Cur].Partial_PhoneNo);
 		}
@@ -829,11 +994,11 @@ int CSIP_Server::Send_Auth_Msg(const char *Command, SIP_MSG *lpSIP_Data, int Via
 {
 	CRASH_DEBUG_COMMAND;
 	int i, k;
-	char S1[SIP_MSG_LEGNTH], S2[1000];
+	char S1[SIP_MSG_LEGNTH], S2[1500];
 	bool Quintum_Flag;
 
 	Quintum_Flag = FALSE;
-	strcpy(S1, lpSIP_Data->Cmd_Str);
+	// Jstrncpy(S1, lpSIP_Data->Cmd_Str, sizeof(S1));
 
 	// Send "100 Tring" before "401" or "200" for Unintum UA
 	if (strstr(lpSIP_Data->User_Agent, "Quintum") != NULL)
@@ -845,68 +1010,117 @@ int CSIP_Server::Send_Auth_Msg(const char *Command, SIP_MSG *lpSIP_Data, int Via
 	// WWW-Authenticate:
 	if (!strcmp(Command, "401"))
 	{
-		if ((i = Get_Position(S1, "WWW-Authenticate:")) > 0)
+		// Remove params
+		// Jstrncpy(S1, lpSIP_Data->Cmd_Str, sizeof(S1));
+		Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Authorization:");
+		Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Contact:");
+		// DTrace_TestMsg("\n\nREG 200 OK, Msg=%s, %d @ %s\n", lpSIP_Data->Cmd_Str, __LINE__, __FILE__);
+
+		// Add WWW-Authenticate
+		if (Quintum_Flag)
 		{
-			k = Get_NextLine(&S1[i]) + i;
-			Deletion(S1, i, k - 1);
+			sprintf(S2, "WWW-Authenticate: Digest realm=\"%s\",nonce=\"%s\"",
+					lpSIP_Data->WWW_Authenticate_Realm, lpSIP_Data->WWW_Authenticate_Nonce);
 		}
-		else if ((i = Get_Position(S1, "Contact:")) < 0)
+		else if (lpSIP_Data->IMS_3GPP_Flag)
 		{
-			if ((i = Get_Position(S1, "Via:")) < 0)
-			{
-				if ((i = Get_Position(S1, "Expires:")) < 0)
-					i = Get_Position(S1, "CSeq:");
-			}
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Security-Client:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Content-Length:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "P-Access-Network-Info:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Supported:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Allow:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Require:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Proxy-Require:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "WWW-Authenticate:");
+			if (!strstr(lpSIP_Data->Cmd_Str, "Require:"))
+				Add_Header(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Require", "ACK", "Contact:", "CSeq:");
+
+			DTrace_TestMsg("\n\nREG 401, Msg=%s, %d @ %s\n", lpSIP_Data->Cmd_Str, __LINE__, __FILE__);
+
+			sprintf(S2, "WWW-Authenticate: Digest realm=\"%s\",nonce=\"%s\",algorithm=%s,ik=\"%s\",ck=\"%s\"",
+					lpSIP_Data->WWW_Authenticate_Realm, 
+					lpSIP_Data->WWW_Authenticate_Nonce, 
+					lpSIP_Data->WWW_Authenticate_Algorithm, 
+					"00112233445566778899aabbccddeeff",
+					"ffeeddccbbaa11223344556677889900");
+			CRASH_DEBUG_COMMAND;
 		}
-		if (i > 0)
+		else
 		{
-			if (Quintum_Flag)
-			{
-				sprintf(S2, "WWW-Authenticate: Digest realm=\"%s\", nonce=\"%s\"\r\n",
-						lpSIP_Data->WWW_Authenticate_Realm, lpSIP_Data->WWW_Authenticate_Nonce);
-			}
-			else
-			{
-				sprintf(S2, "WWW-Authenticate: Digest realm=\"%s\", nonce=\"%s\", algorithm=\"%s\"\r\n",
-						lpSIP_Data->WWW_Authenticate_Realm, lpSIP_Data->WWW_Authenticate_Nonce, lpSIP_Data->WWW_Authenticate_Algorithm);
-			}
-			Insertion(S1, i, S2);
+			sprintf(S2, "WWW-Authenticate: Digest realm=\"%s\",nonce=\"%s\",algorithm=\"%s\"",
+					lpSIP_Data->WWW_Authenticate_Realm, lpSIP_Data->WWW_Authenticate_Nonce, lpSIP_Data->WWW_Authenticate_Algorithm);
 		}
+
+		// if ((i = Get_Position(lpSIP_Data->Cmd_Str, "WWW-Authenticate:")) > 0)
+		// {
+		// 	CRASH_DEBUG_COMMAND;
+		// 	k = Get_NextLine(&lpSIP_Data->Cmd_Str[i]) + i;
+		// 	Deletion(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), i, k - 1);
+		// }
+		// else 
+		if ((i = Get_Position(lpSIP_Data->Cmd_Str, "Contact:")) >= 0 || (i = Get_Position(lpSIP_Data->Cmd_Str, "CSeq:")) >= 0)
+		{
+#if OPAQUE_SUPPORT
+			Jstrncat(S2, Jsprintf(Buf, sizeof(Buf), ", opaque=\"%s\"", lpSIP_Data->WWW_Authenticate_Opaque), sizeof(S2));
+#endif
+			Jstrncat(S2, "\r\n", sizeof(S2));
+			int ret = Insertion(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), i, S2);
+			// DTrace_TestMsg("\n\nREG 200 OK, Beg=%d, strlen(S1)=%d, ret=%d, Msg=%s, %d @ %s\n", i, strlen(lpSIP_Data->Cmd_Str), ret, lpSIP_Data->Cmd_Str, __LINE__, __FILE__);
+		}
+		// Jstrncpy(lpSIP_Data->Cmd_Str, S1, sizeof(lpSIP_Data->Cmd_Str));
 	}
 	// WWW-Authenticate:
 	else if (!strcmp(Command, "407"))
 	{
-		if ((i = Get_Position(S1, "Proxy-Authenticate:")) > 0)
+		// Jstrncpy(S1, lpSIP_Data->Cmd_Str, sizeof(S1));
+		Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Proxy-Authorization:");
+		if ((i = Get_Position(lpSIP_Data->Cmd_Str, "Proxy-Authenticate:")) > 0)
 		{
-			k = Get_NextLine(&S1[i]) + i;
-			Deletion(S1, i, k - 1);
+			k = Get_NextLine(&lpSIP_Data->Cmd_Str[i]) + i;
+			Deletion(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), i, k - 1);
 		}
-		else if ((i = Get_Position(S1, "Contact:")) < 0)
-		{
-			if ((i = Get_Position(S1, "Via:")) < 0)
-			{
-				if ((i = Get_Position(S1, "Expires:")) < 0)
-					i = Get_Position(S1, "CSeq:");
-			}
-		}
-		if (i > 0)
+		else if ((i = Get_Position(lpSIP_Data->Cmd_Str, "Contact:")) >= 0 || (i = Get_Position(lpSIP_Data->Cmd_Str, "CSeq:")) >= 0)
 		{
 			if (Quintum_Flag)
 			{
-				sprintf(S2, "Proxy-Authenticate: Digest realm=\"%s\", nonce=\"%s\"\r\n",
+				sprintf(S2, "Proxy-Authenticate: Digest realm=\"%s\",nonce=\"%s\"",
 						lpSIP_Data->Proxy_Authenticate_Realm, lpSIP_Data->Proxy_Authenticate_Nonce);
+			}
+			else if (lpSIP_Data->IMS_3GPP_Flag)
+			{
+				Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Security-Client:");
+				Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "P-Access-Network-Info:");
+
+				sprintf(S2, "WWW-Authenticate: Digest realm=\"%s\",nonce=\"%s\",algorithm=\"%s\",qop=\"%s\"",
+						lpSIP_Data->WWW_Authenticate_Realm, lpSIP_Data->WWW_Authenticate_Nonce, lpSIP_Data->WWW_Authenticate_Algorithm, lpSIP_Data->WWW_Authenticate_Qop);
 			}
 			else
 			{
-				sprintf(S2, "Proxy-Authenticate: Digest realm=\"%s\", nonce=\"%s\", algorithm=\"%s\"\r\n",
+				sprintf(S2, "Proxy-Authenticate: Digest realm=\"%s\",nonce=\"%s\",algorithm=\"%s\"",
 						lpSIP_Data->Proxy_Authenticate_Realm, lpSIP_Data->Proxy_Authenticate_Nonce, lpSIP_Data->Proxy_Authenticate_Algorithm);
 			}
-			Insertion(S1, i, S2);
+			Jstrncat(S2, "\r\n", sizeof(S2));
+			Insertion(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), i, S2);
+		}
+		// Jstrncpy(lpSIP_Data->Cmd_Str, S1, sizeof(lpSIP_Data->Cmd_Str));
+	}
+	// 200 OK for REGISTER
+	else if (!strcmp(Command, "200"))
+	{
+		if (lpSIP_Data->IMS_3GPP_Flag)
+		{
+			// Remove parameters
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Authorization:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "Security-Client:");
+			Delete_Param(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "P-Access-Network-Info:");
+			if (!strstr(lpSIP_Data->Cmd_Str, "P-Associated-URI"))
+				Add_Header(lpSIP_Data->Cmd_Str, sizeof(lpSIP_Data->Cmd_Str), "P-Associated-URI", lpSIP_Data->P_Associated_URI, "Contact:", "CSeq:");
+
+			// DTrace_TestMsg("\n\nREG 200 OK, Msg=%s, %d @ %s\n", lpSIP_Data->Cmd_Str, __LINE__, __FILE__);
 		}
 	}
 
 	// Send SIP Command
-	strcpy(lpSIP_Data->Cmd_Str, S1);
 	Send_SIP_Command(Command, lpSIP_Data, NOCHANGE_VIA, FROM);
 
 	RETURN 0;
@@ -915,6 +1129,7 @@ int CSIP_Server::Send_Auth_Msg(const char *Command, SIP_MSG *lpSIP_Data, int Via
 // 此副程式有問題需修改
 void CSIP_Server::Process_ACK(SIP_MSG *lpSIP_Msg)
 {
+	CRASH_DEBUG_COMMAND;
 	int Cur111;
 	SIP_MSG SIP_Data;
 
@@ -942,13 +1157,14 @@ void CSIP_Server::Process_ACK(SIP_MSG *lpSIP_Msg)
 			Clear_Command(Cur111);
 		}
 	}
+	RETURN;
 }
 
 void CSIP_Server::Process_INVITE(SIP_MSG *lpSIP_Msg)
 {
+	CRASH_DEBUG_COMMAND;
 	int i, Command_Cur;
 
-	DTrace_CommonMsg("INVITE----------------------------\r\n");
 	// 1. To_Error: "To" OffLine, Check UnME User, If OnLine, Send I0|PhoneNo|CallerID|.., 通知前來註冊
 	if (!lpSIP_Msg->ToDest.is_used())
 		Send_SIP_Command("404", lpSIP_Msg, NOCHANGE_VIA, FROM);
@@ -956,6 +1172,7 @@ void CSIP_Server::Process_INVITE(SIP_MSG *lpSIP_Msg)
 	// 2. Command Already On-Process
 	else if ((Command_Cur = Check_Command(lpSIP_Msg)) >= 0)
 	{
+		DTrace_TestMsg("Process_INVITE, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Command_Cur].State], __LINE__, __FILE__);
 		// 2.1 INVITE(Duplicate): Waiting Relay, NOP, but Update SIP_Msg
 		if ((Command_Data[Command_Cur].State == SIP_RELAY_CONNECT) || (Command_Data[Command_Cur].State == SIP_RELAY_READ))
 		{
@@ -989,6 +1206,7 @@ void CSIP_Server::Process_INVITE(SIP_MSG *lpSIP_Msg)
 	else if ((lpSIP_Msg->RTP_Relay_Flag) &&
 			 ((i = m_lpNetIF->StartDestClient(&Command_Data[Command_Cur].Relay_TCP_Dest, AF_INET, SOCK_STREAM, CT_SIPCrypto, 0, lpSIP_Msg->Relay_TCP_IP, atoi(lpSIP_Msg->Relay_TCP_Port), false, SocketModule_Callbcak_Function, this, RTP_RELAY_EVENT)) > 0))
 	{
+		DTrace_TestMsg("Process_INVITE, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Command_Cur].State], __LINE__, __FILE__);
 		m_lpNetIF->SetTimer(&Command_Data[Command_Cur].MixTimer, TWO_SECOND, TIMERID_COMMAND + Command_Cur);
 		Command_Data[Command_Cur].State = SIP_RELAY_CONNECT;
 		Command_Data[Command_Cur].Timer_Counter = 0;
@@ -997,6 +1215,25 @@ void CSIP_Server::Process_INVITE(SIP_MSG *lpSIP_Msg)
 	// 5. New Command(!Relay|Relay Fail): SIP_READY -> SIP_INVITE
 	else
 	{
+		DTrace_TestMsg("Process_INVITE, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Command_Cur].State], __LINE__, __FILE__);
+		// Save sdp
+		if (lpSIP_Msg->SDP_IP[0])
+		{
+			Jstrcpy(Command_Data[Command_Cur].From_SDP_IP, lpSIP_Msg->SDP_IP);
+			Command_Data[Command_Cur].From_SDP_Audio_Port = Jatoi(lpSIP_Msg->SDP_Audio_Port);
+			Command_Data[Command_Cur].From_SDP_Image_Port = Jatoi(lpSIP_Msg->SDP_Image_Port);
+		}
+		if (SIP_Alg_Flag)
+		{
+			// External sdp ip and port
+			char sdp_ip[64];
+			uint16_t diff_port = ntohs(lpSIP_Msg->FromDest.Raddr.sin_port)-5060+2;
+			NetMakeAddrStr(lpSIP_Msg->FromDest.Raddr, sdp_ip);
+			Jstrcpy(Command_Data[Command_Cur].From_External_SDP_IP, sdp_ip);
+			Command_Data[Command_Cur].From_External_SDP_Audio_Port = Jatoi(lpSIP_Msg->SDP_Audio_Port) + diff_port;
+			Command_Data[Command_Cur].From_External_SDP_Image_Port = Jatoi(lpSIP_Msg->SDP_Image_Port) + diff_port;
+			Modify_SDP(lpSIP_Msg, Command_Data[Command_Cur].From_External_SDP_IP, Command_Data[Command_Cur].From_External_SDP_Audio_Port, Command_Data[Command_Cur].From_External_SDP_Audio_Port);
+		}
 		if (lpSIP_Msg->RTP_Relay_Flag)
 		{
 			lpSIP_Msg->RTP_Relay_Flag = FALSE;
@@ -1008,6 +1245,7 @@ void CSIP_Server::Process_INVITE(SIP_MSG *lpSIP_Msg)
 		Command_Data[Command_Cur].State = SIP_INVITE;
 		Command_Data[Command_Cur].Timer_Counter = 0;
 	}
+	RETURN;
 }
 
 void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
@@ -1018,14 +1256,39 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 	// 1. Response associated with Command
 	if ((Cur111 = Check_Command(lpSIP_Msg)) >= 0)
 	{
-		strcpy(lpSIP_Msg->ViaBuf, Command_Data[Cur111].SIP_Msg.ViaBuf); // 讓Delete_Via時 復原舊Via資料
-		if (((!strcmp(lpSIP_Msg->Command, "183")) || (!strcmp(lpSIP_Msg->Command, "200"))) && (strlen(lpSIP_Msg->SDP) > 0) && (Command_Data[Cur111].SIP_Msg.RTP_Relay_Flag))
+		DTrace_TestMsg("Process_STATUS, State=%s, %d @ %s\n", Command_State_Table[Command_Data[Cur111].State], __LINE__, __FILE__);
+		Jstrcpy(lpSIP_Msg->ViaBuf, Command_Data[Cur111].SIP_Msg.ViaBuf); // 讓Delete_Via時 復原舊Via資料
+		if (((!strcmp(lpSIP_Msg->Command, "183")) || (!strcmp(lpSIP_Msg->Command, "200"))) && (strlen(lpSIP_Msg->SDP) > 0))
 		{
-			Modify_SDP(lpSIP_Msg, Command_Data[Cur111].Relay_UDP_IP, Command_Data[Cur111].Relay_UDP_FPort, Command_Data[Cur111].Relay_UDP_TPort);
-			if (Command_Data[Cur111].SIP_Msg.RL1_Flag == TRUE)
+			// save sdp
+			if (lpSIP_Msg->SDP_IP[0])
 			{
-				Send_Relay_Command("0RL1", lpSIP_Msg, &Command_Data[Cur111]);
-				Command_Data[Cur111].SIP_Msg.RL1_Flag = FALSE;
+				Jstrcpy(Command_Data[Cur111].To_SDP_IP, lpSIP_Msg->SDP_IP);
+				Command_Data[Cur111].To_SDP_Audio_Port = Jatoi(lpSIP_Msg->SDP_Audio_Port);
+				Command_Data[Cur111].To_SDP_Image_Port = Jatoi(lpSIP_Msg->SDP_Image_Port);
+				// sip alg
+				if (SIP_Alg_Flag)
+				{
+					
+					// external sdp ip and port
+					char sdp_ip[64];
+					uint16_t diff_port = ntohs(lpSIP_Msg->ToDest.Raddr.sin_port)-5060+2;
+					NetMakeAddrStr(lpSIP_Msg->ToDest.Raddr, sdp_ip);
+					Jstrcpy(Command_Data[Cur111].To_External_SDP_IP, sdp_ip);
+					Command_Data[Cur111].To_External_SDP_Audio_Port = Jatoi(lpSIP_Msg->SDP_Audio_Port) + diff_port;
+					Command_Data[Cur111].To_External_SDP_Image_Port = Jatoi(lpSIP_Msg->SDP_Image_Port) + diff_port;
+					Modify_SDP(lpSIP_Msg, Command_Data[Cur111].From_External_SDP_IP, Command_Data[Cur111].To_External_SDP_Audio_Port, Command_Data[Cur111].To_External_SDP_Audio_Port);
+				}
+			}
+
+			if ((Command_Data[Cur111].SIP_Msg.RTP_Relay_Flag))
+			{
+				Modify_SDP(lpSIP_Msg, Command_Data[Cur111].Relay_UDP_IP, Command_Data[Cur111].Relay_UDP_FPort, Command_Data[Cur111].Relay_UDP_TPort);
+				if (Command_Data[Cur111].SIP_Msg.RL1_Flag == TRUE)
+				{
+					Send_Relay_Command("0RL1", lpSIP_Msg, &Command_Data[Cur111]);
+					Command_Data[Cur111].SIP_Msg.RL1_Flag = FALSE;
+				}
 			}
 		}
 		Update_Command_By_Response(Cur111, lpSIP_Msg);
@@ -1033,20 +1296,28 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 		// For INVITE Command
 		if (Command_Data[Cur111].State == SIP_INVITE)
 		{
-			Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, DELETE_VIA, FROM); // Via OK
 			if (lpSIP_Msg->Command[0] == '1')
 			{
+				CRASH_DEBUG_COMMAND;
+				if (!strcmp(lpSIP_Msg->Command, "183"))
+					Send_SIPCQI1_Command(&Command_Data[Cur111], S1AP_Server_IP, S1AP_Server_Port);
+				Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, DELETE_VIA, FROM); // Via OK
 				Command_Data[Cur111].State = SIP_100;
 				Command_Data[Cur111].Timer_Counter = 0;
 			}
 			else if ((lpSIP_Msg->Command[0] == '2') || (lpSIP_Msg->Command[0] == '3') || (lpSIP_Msg->Command[0] == '4'))
 			{
+				CRASH_DEBUG_COMMAND;
+				if (!strcmp(lpSIP_Msg->Command, "200"))
+					Send_SIPCQI1_Command(&Command_Data[Cur111], S1AP_Server_IP, S1AP_Server_Port);
+				Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, DELETE_VIA, FROM); // Via OK
 				Command_Data[Cur111].State = SIP_200;
 				Command_Data[Cur111].Timer_Counter = 0;
 				Invite_Proc(FROM, lpSIP_Msg, SIP_INVITE);
 				//if (lpSIP_Msg->Command[0]=='2')
 				{
 					memcpy(lpSIP_Msg, &Command_Data[Cur111].SIP_Msg, sizeof(SIP_Msg));
+					CRASH_DEBUG_COMMAND;
 					Modify_CSeq(lpSIP_Msg->Cmd_Str, "ACK");
 					Send_SIP_Command("ACK", lpSIP_Msg, ADD_VIA, TO); // 加此行避免ACK不發或發錯
 					Invite_Proc(TO, lpSIP_Msg, SIP_INVITE, "ACK");	 //當Invite_Proc(To, .)時, 最後一個Command才需要加
@@ -1057,13 +1328,20 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 		{
 			if (lpSIP_Msg->Command[0] == '1')
 			{
+				CRASH_DEBUG_COMMAND;
+				if (!strcmp(lpSIP_Msg->Command, "183"))
+					Send_SIPCQI1_Command(&Command_Data[Cur111], S1AP_Server_IP, S1AP_Server_Port);
 				Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, DELETE_VIA, FROM); // Via OK
 			}
 			if ((lpSIP_Msg->Command[0] == '2') || lpSIP_Msg->Command[0] == '3' || (lpSIP_Msg->Command[0] == '4'))
 			{
+				CRASH_DEBUG_COMMAND;
+				if (!strcmp(lpSIP_Msg->Command, "200"))
+					Send_SIPCQI1_Command(&Command_Data[Cur111], S1AP_Server_IP, S1AP_Server_Port);
 				Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, DELETE_VIA, FROM); // Via OK
 				Invite_Proc(FROM, lpSIP_Msg, SIP_100);
 				memcpy(lpSIP_Msg, &Command_Data[Cur111].SIP_Msg, sizeof(SIP_Msg));
+				CRASH_DEBUG_COMMAND;
 				Modify_CSeq(Command_Data[Cur111].SIP_Msg.Cmd_Str, "ACK");
 				Send_SIP_Command("ACK", &Command_Data[Cur111].SIP_Msg, ADD_VIA, TO); // 加此行避免ACK不發或發錯
 				Command_Data[Cur111].State = SIP_200;
@@ -1076,6 +1354,7 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 			{
 				if (Command_Data[Cur111].Abandon_Flag == 1)
 				{
+					CRASH_DEBUG_COMMAND;
 					Send_SIP_Command("486", lpSIP_Msg, DELETE_VIA, FROM);
 					Command_Data[Cur111].State = SIP_200;
 					Command_Data[Cur111].Timer_Counter = 0;
@@ -1083,6 +1362,7 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 				}
 				else if (Command_Data[Cur111].Abandon_Flag == 2)
 				{
+					CRASH_DEBUG_COMMAND;
 					Modify_CSeq(Command_Data[Cur111].SIP_Msg.Cmd_Str, "ACK");
 					Send_SIP_Command("ACK", &Command_Data[Cur111].SIP_Msg, ADD_VIA, TO);
 					Command_Data[Cur111].State = SIP_ACK;
@@ -1091,6 +1371,7 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 				}
 				else if (Command_Data[Cur111].Abandon_Flag == 3)
 				{
+					CRASH_DEBUG_COMMAND;
 					sprintf(lpSIP_Msg->Contact_Name, "002886%s", &lpSIP_Msg->To_Name[1]);
 					strcpy(lpSIP_Msg->Contact_URL, Local_IP);
 					if ((Online_Cur = Check_OnLine(lpSIP_Msg->From_Name, &lpSIP_Msg->FromDest.Raddr)) >= 0)
@@ -1114,7 +1395,7 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 			}
 		}
 		else if ((lpSIP_Msg->Command[0] == '2' || lpSIP_Msg->Command[0] == '4') &&
-				 (Command_Data[Cur111].State == SIP_BYE || Command_Data[Cur111].State == SIP_CANCEL || Command_Data[Cur111].State == SIP_REFER || Command_Data[Cur111].State == SIP_NOTIFY))
+				 (Command_Data[Cur111].State == SIP_BYE || Command_Data[Cur111].State == SIP_CANCEL || Command_Data[Cur111].State == SIP_REFER || Command_Data[Cur111].State == SIP_NOTIFY || Command_Data[Cur111].State == SIP_SUBSCRIBE || Command_Data[Cur111].State == SIP_PUBLISH || Command_Data[Cur111].State == SIP_PRACK  || Command_Data[Cur111].State == SIP_UPDATE))
 		{
 			m_lpNetIF->KillTimer(&Command_Data[Cur111].MixTimer);
 			Send_SIP_Command(lpSIP_Msg->Command, lpSIP_Msg, DELETE_VIA, FROM); // Via OK
@@ -1126,6 +1407,7 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 		{
 			if ((lpSIP_Msg->Command[0] == '2') || lpSIP_Msg->Command[0] == '3' || (lpSIP_Msg->Command[0] == '4'))
 			{
+				CRASH_DEBUG_COMMAND;
 				Modify_CSeq(Command_Data[Cur111].SIP_Msg.Cmd_Str, "ACK");
 				Send_SIP_Command("ACK", &Command_Data[Cur111].SIP_Msg, ADD_VIA, TO);
 			}
@@ -1136,11 +1418,13 @@ void CSIP_Server::Process_STATUS(SIP_MSG *lpSIP_Msg)
 
 LRESULT CSIP_Server::WindowProc(UINT message, WPARAM wParam, LPARAM lParam)
 {
+	CRASH_DEBUG_COMMAND;
 	// 重新處理 INVITE Command
 	if (message == INVITE_EVENT)
 	{
 		Process_INVITE((SIP_MSG *)wParam);
 	}
+	CRASH_DEBUG_COMMAND;
 
 	// return CDialog::WindowProc(message, wParam, lParam);
 }
@@ -1209,6 +1493,7 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 			Command_Data[Cur].Timer_Counter += TWO_SECOND;
 			if (Command_Data[Cur].Timer_Counter < TCP_TIMEOUT_DUR)
 			{
+				CRASH_DEBUG_COMMAND;
 				if (Command_Data[Cur].State == SIP_PROXY_AUTH || ((Online_Cur = Check_OnLine(Command_Data[Cur].SIP_Msg.From_Name)) >= 0 && !SIP_OnLine_Data[Online_Cur].Auth_OK))
 				{
 					Send_SIP_Command(Command_Data[Cur].Response_SIP_Msg.Command, &Command_Data[Cur].Response_SIP_Msg, NOCHANGE_VIA, FROM);
@@ -1222,7 +1507,7 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 		}
 
 		// TIMEOUT: SIP_BYE/CANCEL/REFER/NOTIFY -> SIP_READY
-		else if ((Command_Data[Cur].State == SIP_BYE) || (Command_Data[Cur].State == SIP_CANCEL) || (Command_Data[Cur].State == SIP_REFER) || (Command_Data[Cur].State == SIP_NOTIFY))
+		else if ((Command_Data[Cur].State == SIP_BYE) || (Command_Data[Cur].State == SIP_CANCEL) || (Command_Data[Cur].State == SIP_REFER) || (Command_Data[Cur].State == SIP_NOTIFY) || (Command_Data[Cur].State == SIP_SUBSCRIBE) || (Command_Data[Cur].State == SIP_PUBLISH) || (Command_Data[Cur].State == SIP_PRACK) || (Command_Data[Cur].State == SIP_UPDATE))
 		{
 			Command_Data[Cur].Timer_Counter += TWO_SECOND;
 			if (Command_Data[Cur].Timer_Counter < TCP_TIMEOUT_DUR)
@@ -1266,7 +1551,9 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 					}
 				}
 				else if (Command_Data[Cur].PSTN_Flag)
-				{ // Request Timoout more than 5 seconds and Forwarding to GW
+				{ 
+					CRASH_DEBUG_COMMAND;
+					// Request Timoout more than 5 seconds and Forwarding to GW
 					Update_Command(Cur, "302");
 					strcpy(Command_Data[Cur].Response_SIP_Msg.ViaBuf, Command_Data[Cur].SIP_Msg.ViaBuf); //可以拿掉，因為在Update_Command時早已Copy過
 					sprintf(Command_Data[Cur].Response_SIP_Msg.Contact_Name, "002886%s", &Command_Data[Cur].Response_SIP_Msg.To_Name[1]);
@@ -1310,6 +1597,7 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 				strcpy(Command_Data[Cur].Response_SIP_Msg.ViaBuf, Command_Data[Cur].SIP_Msg.ViaBuf); //可以拿掉，因為在Update_Command時早已Copy過
 				// Send "CANCEL"
 				memcpy(&Temp_SIP_Data, &Command_Data[Cur].SIP_Msg, sizeof(SIP_MSG)); //使用Temp_SIP是因為不讓CANCEL蓋過原本Command中的INVITE
+				CRASH_DEBUG_COMMAND;
 				Modify_CSeq(Temp_SIP_Data.Cmd_Str, "CANCEL");
 				Send_SIP_Command("CANCEL", &Temp_SIP_Data, ADD_VIA, TO);
 				// Set Param
@@ -1321,6 +1609,7 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 					Invite_Proc(TO, &Command_Data[Cur].SIP_Msg, SIP_100, "CANCEL"); //當Invite_Proc(To, .)時, 最後一個Command才需要加
 				else if (Command_Data[Cur].Abandon_Flag == 2)
 				{
+					CRASH_DEBUG_COMMAND;
 					if ((Invite_Cur = Check_Invite(&Command_Data[Cur].SIP_Msg)) >= 0)
 						SIP_Invite_Data[Invite_Cur].Forwarding_GW_Flag = TRUE;
 					if ((Online_Cur = Check_OnLine(Command_Data[Cur].SIP_Msg.From_Name)) >= 0)
@@ -1362,6 +1651,7 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 				}
 				else if (Command_Data[Cur].Abandon_Flag == 2)
 				{
+					CRASH_DEBUG_COMMAND;
 					Modify_CSeq(Command_Data[Cur].SIP_Msg.Cmd_Str, "ACK");
 					Send_SIP_Command("ACK", &Command_Data[Cur].SIP_Msg, ADD_VIA, TO);
 					Command_Data[Cur].State = SIP_ACK;
@@ -1370,6 +1660,7 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 				}
 				else if (Command_Data[Cur].Abandon_Flag == 3)
 				{
+					CRASH_DEBUG_COMMAND;
 					Update_Command(Cur, "302");
 					sprintf(Command_Data[Cur].Response_SIP_Msg.Contact_Name, "002886%s", &Command_Data[Cur].Response_SIP_Msg.To_Name[1]);
 					strcpy(Command_Data[Cur].Response_SIP_Msg.Contact_URL, Local_IP);
@@ -1414,6 +1705,7 @@ void CSIP_Server::OnTimer(MIXTIMER *wParam)
 			} // 有些狀況不可 Delete_Via
 			else
 			{
+				CRASH_DEBUG_COMMAND;
 				Modify_CSeq(Command_Data[Cur].SIP_Msg.Cmd_Str, "ACK");
 				Send_SIP_Command("ACK", &Command_Data[Cur].SIP_Msg, ADD_VIA, TO); // 要修改 CSeq: 12 INVITE 成為 CSeq: 12 ACK
 				Command_Data[Cur].State = SIP_ACK;
@@ -1887,7 +2179,9 @@ void CSIP_Server::OnRTP_Relay(NetConnect_t *wParam, LPARAM lParam)
 // }
 
 int CSIP_Server::Invite_Proc(int Send_Flag, SIP_MSG *lpSIP_Msg, SIP_STATE State, const char *Command)
-{ // 當Server端主動送封包時，需填入Command否則無法得知正確發送的Command
+{
+	CRASH_DEBUG_COMMAND;
+	// 當Server端主動送封包時，需填入Command否則無法得知正確發送的Command
 	int Invite_Cur;
 	SIP_INVITE_DATA *lpInvite_Data;
 	std::string timestr1, timestr2;
@@ -1906,10 +2200,10 @@ int CSIP_Server::Invite_Proc(int Send_Flag, SIP_MSG *lpSIP_Msg, SIP_STATE State,
 					lpInvite_Data = &SIP_Invite_Data[Invite_Cur];
 				ftime(&lpInvite_Data->Invite_Time);
 				sprintf(SIP_Invite_Data[Invite_Cur].Log_File_Name, "%s\\%s to %s\\%s",
-						Jstringftime(timestr1, "%Y-%m-%d\\%H clock", &lpInvite_Data->Invite_Time)->c_str(),
+						Jstringftime(timestr1, "%Y-%m-%d\\%H clock", &lpInvite_Data->Invite_Time).c_str(),
 						lpInvite_Data->From_PhoneNo,
 						lpInvite_Data->To_PhoneNo,
-						Jstringftime(timestr2, "%H-%M-%S", &lpInvite_Data->Invite_Time)->c_str());
+						Jstringftime(timestr2, "%H-%M-%S", &lpInvite_Data->Invite_Time).c_str());
 				lpInvite_Data->Answer_State = Inviting;
 			}
 		}
@@ -1979,7 +2273,6 @@ int CSIP_Server::Invite_Proc(int Send_Flag, SIP_MSG *lpSIP_Msg, SIP_STATE State,
 	}
 	else if ((Send_Flag == TO) && Invite_Cur >= 0 && Command != NULL) // Server發送封包
 	{																  // 用於當超過30秒Callee沒接電話,Server將會中止這通會話
-
 		// Request Process
 		if (!strcmp(Command, "CANCEL") && lpInvite_Data->Answer_State == Inviting)
 		{
@@ -2026,7 +2319,7 @@ int CSIP_Server::Invite_Proc(int Send_Flag, SIP_MSG *lpSIP_Msg, SIP_STATE State,
 	// Show_Invite();
 	//	Access_OnLine_State(lpSIP_Msg);
 
-	return 0;
+	RETURN 0;
 }
 
 // void CSIP_Server::OnSelchangeTab1(NMHDR* pNMHDR, LRESULT* pResult)
@@ -2098,16 +2391,18 @@ int CSIP_Server::Invite_Proc(int Send_Flag, SIP_MSG *lpSIP_Msg, SIP_STATE State,
 // 	ofn.lpfnHook			= NULL;
 // 	ofn.lpTemplateName		= NULL;
 
-// 	if (GetOpenFileName(&ofn)==TRUE)	ShellExecute(m_hWnd,"open",szFileName,NULL,NULL,SW_SHOWNORMAL);
+// 	if (GetOpenFileName(&ofn)==TRUE)	Shellfdfcute(m_hWnd,"open",szFileName,NULL,NULL,SW_SHOWNORMAL);
 // 	else return;
 // }
 
 int CSIP_Server::Update_SIP_Server_Param(char *Method)
 {
+	CRASH_DEBUG_COMMAND;
 	char S1[100];
 
 	if (!strcmp(Method, "GET"))
 	{
+		GetPrivateProfileString("Setup Info", "External_Server_IP", "127.0.0.1", Local_IP, sizeof(Local_IP), SERVER_INFO_PATH);
 		GetPrivateProfileString("Setup Info", "RTP_Relay_IP", m_IP.c_str(), RTP_Relay_IP, sizeof(RTP_Relay_IP), SERVER_INFO_PATH);
 		GetPrivateProfileString("Setup Info", "RTP_Relay_Port", m_Port.c_str(), RTP_Relay_Port, sizeof(RTP_Relay_Port), SERVER_INFO_PATH);
 		GetPrivateProfileString("Setup Info", "NTUT_GW_IP", m_NTUT_IP.c_str(), NTUT_GW_IP, sizeof(NTUT_GW_IP), SERVER_INFO_PATH);
@@ -2115,10 +2410,15 @@ int CSIP_Server::Update_SIP_Server_Param(char *Method)
 		GetPrivateProfileString("Setup Info", "Outbound_PhoneNo", m_Outbound_PhoneNo.c_str(), Outbound_PhoneNo, sizeof(Outbound_PhoneNo), SERVER_INFO_PATH);
 		GetPrivateProfileString("Setup Info", "Log_File", m_Log_File.c_str(), Log_File, sizeof(Log_File), SERVER_INFO_PATH);
 		GetPrivateProfileString("Setup Info", "Search_PhoneNo", m_Number_Search.c_str(), Search_PhoneNo, sizeof(Search_PhoneNo), SERVER_INFO_PATH);
+		GetPrivateProfileString("Setup Info", "S1AP_Server_IP", "", S1AP_Server_IP, sizeof(S1AP_Server_IP), SERVER_INFO_PATH);
+		
+		S1AP_Server_Port = GetPrivateProfileInt("Setup Info", "S1AP_Server_Port", 36412, SERVER_INFO_PATH);
+		SIP_Alg_Flag = GetPrivateProfileInt("Setup Info", "SIP_Alg_Flag", 0, SERVER_INFO_PATH);
 		Relay_100_Flag = GetPrivateProfileInt("Setup Info", "Relay_100_Flag", 0, SERVER_INFO_PATH);
 		Reg_Auth_Level = GetPrivateProfileInt("Setup2 Info", "Reg_Auth_Level", MAX_REG_LEVEL, SERVER_INFO_PATH);
 		Proxy_Auth_Level = GetPrivateProfileInt("Setup2 Info", "Proxy_Auth_Level", MAX_PROXY_LEVEL, SERVER_INFO_PATH);
 		Expire_Limit_Weight = GetPrivateProfileInt("Setup2 Info", "Expire_Limit_Weight", EXPIRE_LIMIT_WEIGHT, SERVER_INFO_PATH);
+		Write_Flag = GetPrivateProfileInt("Setup2 Info", "Write_Log_Flag", 0, SERVER_INFO_PATH);
 
 		// UpdateData(TRUE);
 		m_IP = RTP_Relay_IP;
@@ -2129,6 +2429,12 @@ int CSIP_Server::Update_SIP_Server_Param(char *Method)
 		m_Log_File = Log_File;
 		m_Number_Search = Search_PhoneNo;
 		sprintf(S1, "Relay Level %d", Relay_100_Flag);
+		if (S1AP_Server_IP[0])
+		{
+			S1AP_Addr.sin_family = AF_INET;
+			S1AP_Addr.sin_addr.s_addr=inet_addr(S1AP_Server_IP);
+			S1AP_Addr.sin_port = htons(S1AP_Server_Port);
+		}
 		// GetDlgItem(IDC_BUTTON3)->SetWindowText(S1);
 		// UpdateData(FALSE);
 
@@ -2176,7 +2482,7 @@ int CSIP_Server::Update_SIP_Server_Param(char *Method)
 		sprintf(S1, "%d", Relay_100_Flag);
 		WritePrivateProfileString("Setup Info", "Relay_100_Flag", S1, SERVER_INFO_PATH);
 	}
-	return 0;
+	RETURN 0;
 }
 
 // int CSIP_Server::Update_SIP_Server_Param(char *Method)
@@ -2428,6 +2734,34 @@ int CSIP_Server::Write_Log(const char *Head, char *S1, sockaddr_mix *lpAddr, SIP
 	CRYPTO_TYPE Crypto_Type;
 	char szCrypto_Type[20];
 
+	Get_Network_Mothod(Head, lpSIP_Msg, Crypto_Type);
+
+	if (lpAddr != NULL)
+	{
+		Port = lpAddr->sin_port;
+		Port = ((Port & 0xFF) << 8) + ((Port >> 8) & 0xFF);
+		strcpy(IP, inet_ntoa(lpAddr->sin_addr));
+	}
+	else
+	{
+		Port = 0;
+		IP[0] = 0;
+	}
+	// Crypto Type
+	if (Crypto_Type == CT_NoCrypto)
+		strcpy(szCrypto_Type, "NoCrypto");
+	else if (Crypto_Type == CT_SIPCrypto)
+		strcpy(szCrypto_Type, "SIP_Crypto");
+	else if (Crypto_Type == CT_Walkersun1)
+		strcpy(szCrypto_Type, "Walkersun1_Crypto");
+	else
+		strcpy(szCrypto_Type, "Crypto_Error");
+
+	//--- print out log
+	DTrace_CommonMsg("         << %s %s %s:%d  %s >>\n", szCrypto_Type, Head, IP, Port, Jstringftime(timestr, "%Y/%m/%d %H:%M:%S.%f", NULL).c_str());
+	DTrace_CommonMsg("%s\n\n", S1);
+
+	//--- write log to file
 	// 寫入 Log 檔案
 	if ((strlen(Log_File) > 0) && (strlen(Log_File) < 20))
 		sprintf(Name, "C:/SIP_Log_%s.txt", Log_File);
@@ -2444,36 +2778,14 @@ int CSIP_Server::Write_Log(const char *Head, char *S1, sockaddr_mix *lpAddr, SIP
 			RETURN - 1;
 		}
 	}
-	Get_Network_Mothod(Head, lpSIP_Msg, Crypto_Type);
 	if ((HsfOut1 = fopen(Name, "a+")) == NULL)
 	{
 		RETURN - 1;
 	}
 	else
 	{
-		if (lpAddr != NULL)
-		{
-			Port = lpAddr->sin_port;
-			Port = ((Port & 0xFF) << 8) + ((Port >> 8) & 0xFF);
-			strcpy(IP, inet_ntoa(lpAddr->sin_addr));
-		}
-		else
-		{
-			Port = 0;
-			IP[0] = 0;
-		}
-		// Crypto Type
-		if (Crypto_Type == CT_NoCrypto)
-			strcpy(szCrypto_Type, "NoCrypto");
-		else if (Crypto_Type == CT_SIPCrypto)
-			strcpy(szCrypto_Type, "SIP_Crypto");
-		else if (Crypto_Type == CT_Walkersun1)
-			strcpy(szCrypto_Type, "Walkersun1_Crypto");
-		else
-			strcpy(szCrypto_Type, "Crypto_Error");
-
 		// Print Msg
-		fprintf(HsfOut1, "         << %s %s %s:%d  %s >>\r\n", szCrypto_Type, Head, IP, Port, Jstringftime(timestr, "%Y/%m/%d %H:%M:%S.%f", NULL)->c_str());
+		fprintf(HsfOut1, "         << %s %s %s:%d  %s >>\r\n", szCrypto_Type, Head, IP, Port, Jstringftime(timestr, "%Y/%m/%d %H:%M:%S.%f", NULL).c_str());
 		fprintf(HsfOut1, "%s\r\n\r\n", S1);
 		fclose(HsfOut1);
 	}
@@ -2631,6 +2943,7 @@ int CSIP_Server::Check_Command_By_Relay_Socket(MIXSOCKET Socket)
 }
 int CSIP_Server::Check_Command(SIP_MSG *lpSIP_Data)
 {
+	CRASH_DEBUG_COMMAND;
 	int i, Cur;
 	char Command[100];
 
@@ -2647,10 +2960,18 @@ int CSIP_Server::Check_Command(SIP_MSG *lpSIP_Data)
 				Get_CSeq_Num(lpSIP_Data->Cmd_Str, "CSeq:", Command);
 			else
 				strcpy(Command, lpSIP_Data->Command);
+
+			DTrace_TestMsg(	"Check_Command, Command_Data[%d].SIP_Msg.From=%s, SIP_Msg.To=%s, SIP_Msg.CallId=%s\n"
+							"Command=%s, lpSIP_Data->From=%s, lpSIP_Data->To=%s, lpSIP_Data->CallId=%s, %d @ %s\n", 
+				Cur, Command_Data[Cur].SIP_Msg.From_Name, Command_Data[Cur].SIP_Msg.To_Name, Command_Data[Cur].SIP_Msg.CallerID,
+				Command, lpSIP_Data->From_Name, lpSIP_Data->To_Name, lpSIP_Data->CallerID,
+				__LINE__, __FILE__);
+
 			// 2. Check From, To
 			if ((!strcmp(Command_Data[Cur].SIP_Msg.Command, Command)) &&
 				(!strcmp(Command_Data[Cur].SIP_Msg.From_Name, lpSIP_Data->From_Name)) &&
-				(!strcmp(Command_Data[Cur].SIP_Msg.To_Name, lpSIP_Data->To_Name)))
+				(!strcmp(Command_Data[Cur].SIP_Msg.To_Name, lpSIP_Data->To_Name)) &&
+				(!strcmp(Command_Data[Cur].SIP_Msg.CallerID ,lpSIP_Data->CallerID)))
 				break;
 			// 3. Calculate i
 			i++;
@@ -2663,9 +2984,9 @@ int CSIP_Server::Check_Command(SIP_MSG *lpSIP_Data)
 	}
 
 	if (Cur < COMMAND_QUEUE_SIZE)
-		return Cur;
+		{RETURN Cur;}
 	else
-		return -1;
+		{RETURN -1;}
 }
 
 int CSIP_Server::Save_Command(SIP_MSG *lpSIP_Data)
@@ -2687,14 +3008,29 @@ int CSIP_Server::Save_Command(SIP_MSG *lpSIP_Data)
 			Command_Data[Command_Cur].State = SIP_BYE;
 		else if (!strcmp(lpSIP_Data->Command, "REFER"))
 			Command_Data[Command_Cur].State = SIP_REFER;
+		else if (!strcmp(lpSIP_Data->Command, "PRACK"))
+			Command_Data[Command_Cur].State = SIP_PRACK;
+		else if (!strcmp(lpSIP_Data->Command, "UPDATE"))
+			Command_Data[Command_Cur].State = SIP_UPDATE;
 		else if (!strcmp(lpSIP_Data->Command, "NOTIFY"))
 			Command_Data[Command_Cur].State = SIP_NOTIFY;
+		else if (!strcmp(lpSIP_Data->Command, "SUBSCRIBE"))
+			Command_Data[Command_Cur].State = SIP_SUBSCRIBE;
+		else if (!strcmp(lpSIP_Data->Command, "PUBLISH"))
+			Command_Data[Command_Cur].State = SIP_PUBLISH;
 		else if (!strcmp(lpSIP_Data->Command, "ACK"))
 			return -1;
 		else if (!strcmp(lpSIP_Data->Command, "INVITE"))
-		{ //To_Name: (02~09)...
+		{ 
+			//To_Name: (02~09)...
 			Command_Data[Command_Cur].PSTN_Flag = (Forwarding_GW_Check && !lpSIP_Data->Forwarding_GW_Flag) && (lpSIP_Data->To_Name[0] == '0' && (lpSIP_Data->To_Name[1] >= '2' && lpSIP_Data->To_Name[1] <= '9'));
 			Command_Data[Command_Cur].Abandon_Time = (Command_Data[Command_Cur].PSTN_Flag) ? Forwarding_GW_TIME : ABANDON_TIME;
+			// save phone id
+			if (lpSIP_Data->FromPhoneId[0])
+				Jstrncpy(Command_Data[Command_Cur].FromPhoneId, lpSIP_Data->FromPhoneId, sizeof(Command_Data[Command_Cur].FromPhoneId));
+			if (lpSIP_Data->ToPhoneId[0])
+				Jstrncpy(Command_Data[Command_Cur].ToPhoneId, lpSIP_Data->ToPhoneId, sizeof(Command_Data[Command_Cur].ToPhoneId));
+			DTrace_TestMsg("Process_Invite, Save_Command, lpSIP_Data->FromPhoneId=%s, lpSIP_Data->ToPhoneId=%s, %d @ %s\n", lpSIP_Data->FromPhoneId, lpSIP_Data->ToPhoneId, __LINE__, __FILE__);
 		}
 		memcpy(&Command_Data[Command_Cur].SIP_Msg, lpSIP_Data, sizeof(SIP_MSG));
 		Command_Data[Command_Cur].Response_SIP_Msg.Command[0] = 0;
@@ -2806,6 +3142,33 @@ int CSIP_Server::Init_OnLine()
 	return 0;
 }
 
+int CSIP_Server::Show_OnLine()
+{
+	CRASH_DEBUG_COMMAND;
+	int i, Cur;
+	bool LogicA, LogicB;
+
+	DTrace_TestMsg("Show_OnLine, SIP_OnLine_Num=%d, %d @ %s\n", SIP_OnLine_Num, __LINE__, __FILE__);
+	// Search whether PhoneNo Exist or not ?
+	if (SIP_OnLine_Num > 0)
+	{
+		for (i = 0, Cur = 0; Cur < SIP_ONLINE_SIZE; Cur++)
+		{
+			if (SIP_OnLine_Data[Cur].Flag)
+			{
+				DTrace_TestMsg("SIP_OnLine_Data[%d].PhoneId=%s, SIP_OnLine_Data[Cur].PhoneNo=%s, PhoneNo=%s, %d @ %s\n", Cur, SIP_OnLine_Data[Cur].PhoneId, SIP_OnLine_Data[Cur].PhoneNo, __LINE__, __FILE__);
+				i++;
+				if (i >= SIP_OnLine_Num)
+				{
+					Cur = SIP_ONLINE_SIZE;
+					break;
+				}
+			}
+		}
+	}
+	RETURN 0;
+}
+
 int CSIP_Server::Check_OnLine(char *PhoneNo, sockaddr_mix *Addr)
 {
 	CRASH_DEBUG_COMMAND;
@@ -2825,7 +3188,8 @@ int CSIP_Server::Check_OnLine(char *PhoneNo, sockaddr_mix *Addr)
 		{
 			if (SIP_OnLine_Data[Cur].Flag)
 			{
-				if (!strcmp(SIP_OnLine_Data[Cur].PhoneNo, PhoneNo))
+				DTrace_TestMsg("SIP_OnLine_Num=%d, SIP_OnLine_Data[%d].PhoneId=%s, SIP_OnLine_Data[Cur].PhoneNo=%s, PhoneNo=%s, %d @ %s\n", SIP_OnLine_Num, Cur, SIP_OnLine_Data[Cur].PhoneId, SIP_OnLine_Data[Cur].PhoneNo, PhoneNo, __LINE__, __FILE__);
+				if (!strcmp(SIP_OnLine_Data[Cur].PhoneNo, PhoneNo) || !strcmp(SIP_OnLine_Data[Cur].PhoneId, PhoneNo))
 				{
 					if (Addr != NULL)
 					{
@@ -2895,6 +3259,7 @@ int CSIP_Server::Save_OnLine(SIP_MSG *lpData, int Flag)
 			RETURN - 4;
 		}
 
+	CRASH_DEBUG_COMMAND;
 	// 2. OffLine
 	if ((Cur = Check_OnLine(SS1, lpAddr)) < 0)
 	{
@@ -2964,7 +3329,10 @@ void CSIP_Server::Set_OnLine(SIP_MSG *lpData, int Cur, int Flag)
 		// strcpy(SIP_OnLine_Data[Cur].R_IP, lpData->FR_IP);
 		// strcpy(SIP_OnLine_Data[Cur].V_IP, lpData->FV_IP);
 		// SIP_OnLine_Data[Cur].Crypto_Type = lpData->From_Crypto_Type;
-		strcpy(SIP_OnLine_Data[Cur].PhoneNo, lpData->From_Name);
+		if (!strcmp(lpData->Command, "REGISTER"))
+			Jstrncpy(SIP_OnLine_Data[Cur].PhoneId, lpData->From_Name, sizeof(SIP_OnLine_Data[Cur].PhoneId));
+		else
+			Jstrncpy(SIP_OnLine_Data[Cur].PhoneNo, lpData->From_Name, sizeof(SIP_OnLine_Data[Cur].PhoneNo));
 	}
 	else
 	{ // 被叫端未註冊過, 首次被 INVITE(PC to Phone or Co-Server), 需將之存入 OnLine Buffer
@@ -2978,6 +3346,7 @@ void CSIP_Server::Set_OnLine(SIP_MSG *lpData, int Cur, int Flag)
 		// strcpy(SIP_OnLine_Data[Cur].R_IP, lpData->TR_IP);
 		// strcpy(SIP_OnLine_Data[Cur].V_IP, lpData->TV_IP);
 		// SIP_OnLine_Data[Cur].Crypto_Type = lpData->To_Crypto_Type;
+		Jstrncpy(SIP_OnLine_Data[Cur].PhoneNo, lpData->To_Name, sizeof(SIP_OnLine_Data[Cur].PhoneNo));
 		strcpy(SIP_OnLine_Data[Cur].PhoneNo, lpData->To_Name);
 	}
 }
@@ -3007,6 +3376,40 @@ int CSIP_Server::Check_CDMS_Data(const char *Account)
 		{
 			// Check From, To
 			if (!strcmp(CDMS_Data[Cur].PhoneNo, Account))
+				break;
+			i++;
+			if (i >= CDMS_Data_Num)
+			{
+				Cur = CDMS_DATA_SIZE;
+				break;
+			}
+		}
+	}
+	if (Cur < CDMS_DATA_SIZE)
+		return Cur;
+	else
+		return -1;
+	return 0;
+}
+
+int CSIP_Server::Check_CDMS_Data_By_Id(const char *Id)
+{
+	int i, Cur;
+
+	if (!Id)
+		return -1;
+
+	for (i = 0, Cur = 0; Cur < CDMS_DATA_SIZE; Cur++)
+	{
+		if (CDMS_Data_Num == 0)
+		{
+			Cur = CDMS_DATA_SIZE;
+			break;
+		}
+		if (CDMS_Data[Cur].ID[0])
+		{
+			// Check From, To
+			if (!strcmp(CDMS_Data[Cur].ID, Id))
 				break;
 			i++;
 			if (i >= CDMS_Data_Num)
@@ -3065,15 +3468,26 @@ int CSIP_Server::Check_MD5(SIP_MSG *lpData, int Online_Cur, bool Access_Flag)
 	// 1. Account exist
 	if (SIP_OnLine_Data[Online_Cur].CDMS_OK == 0 || Access_Flag)
 	{
-		if ((Cur = Check_CDMS_Data(lpData->From_Name)) >= 0)
+		if ((Cur = Check_CDMS_Data_By_Id(lpData->From_Name)) >= 0)
 		{
 			SIP_OnLine_Data[Online_Cur].CDMS_OK = 1;
+			strcpy(SIP_OnLine_Data[Online_Cur].PhoneId, CDMS_Data[Cur].ID);
+			strcpy(SIP_OnLine_Data[Online_Cur].PhoneNo, CDMS_Data[Cur].PhoneNo);
 			strcpy(SIP_OnLine_Data[Online_Cur].Mobile, CDMS_Data[Cur].Mobile);
 			strcpy(SIP_OnLine_Data[Online_Cur].Name, CDMS_Data[Cur].Name);
 			strcpy(SIP_OnLine_Data[Online_Cur].Password, CDMS_Data[Cur].Password);
 			strcpy(Password, SIP_OnLine_Data[Online_Cur].Password);
 			//Trunking GW Process
 			Trunk_GW_Set(&SIP_OnLine_Data[Online_Cur].Trunk_GW, CDMS_Data[Cur].TrunkGW);
+			// Phone id
+			Jstrcpy(lpData->FromPhoneId, CDMS_Data[Cur].ID);
+			DTrace_TestMsg("Check_Md5, lpData=0x%x, Data->ToPhoneId=%s,  lpData->From_Name=%s, %d @ %s\n", lpData, lpData->FromPhoneId, lpData->From_Name, __LINE__, __FILE__);
+			// P-Associated-URI
+			if (lpData->IMS_3GPP_Flag)
+			{
+				Jsprintf(lpData->P_Associated_URI, sizeof(lpData->P_Associated_URI), "<sip:%s@%s>", SIP_OnLine_Data[Online_Cur].PhoneNo, lpData->From_URL);
+			}
+			DTrace_TestMsg("SIP_OnLine_Data[%d].PhoneId=%s, PhoneNo=%s, %d @ %s\n", Cur, SIP_OnLine_Data[Cur].PhoneId, SIP_OnLine_Data[Cur].PhoneNo, __LINE__, __FILE__);
 		}
 		// Account don't exist and account's first character isn't within '0' ~ '9'
 		else
@@ -3085,37 +3499,60 @@ int CSIP_Server::Check_MD5(SIP_MSG *lpData, int Online_Cur, bool Access_Flag)
 	// 2. Authorization Process
 	if (SIP_OnLine_Data[Online_Cur].CDMS_OK == 1)
 	{
-		i = (!strcmp(lpData->Command, "REGISTER")) ? Get_Position(lpData->Cmd_Str, "Authorization:") : Get_Position(lpData->Cmd_Str, "Proxy-Authorization:");
-		if (i >= 0)
-		{
-			Get_Auth(&lpData->Cmd_Str[i], "algorithm=", lpData->Authorization_Algorithm);
-			Get_Auth(&lpData->Cmd_Str[i], "nonce=", lpData->Authorization_Nonce);
-			Get_Auth(&lpData->Cmd_Str[i], "realm=", lpData->Authorization_Realm);
-			Get_Auth(&lpData->Cmd_Str[i], "response=", lpData->Authorization_Response);
-			Get_Auth(&lpData->Cmd_Str[i], "uri=", lpData->Authorization_Uri);
-			Get_Auth(&lpData->Cmd_Str[i], "username=", lpData->Authorization_Username);
-		}
-		if ((strlen(lpData->Authorization_Nonce) > 0) &&
-			(strlen(lpData->Authorization_Realm) > 0) &&
-			(strlen(lpData->Authorization_Response) > 0) &&
-			(strlen(lpData->Authorization_Uri) > 0) &&
-			(strlen(lpData->Authorization_Username) > 0) &&
-			(strlen(Password) > 0))
+		// i = (!strcmp(lpData->Command, "REGISTER")) ? Get_Position(lpData->Cmd_Str, "Authorization:") : Get_Position(lpData->Cmd_Str, "Proxy-Authorization:");
+		// if (i >= 0)
+		// {
+		// 	// Get_Auth(&lpData->Cmd_Str[i], "algorithm=", lpData->Authorization_Algorithm);
+		// 	// Get_Auth(&lpData->Cmd_Str[i], "nonce=", lpData->Authorization_Nonce);
+		// 	// Get_Auth(&lpData->Cmd_Str[i], "realm=", lpData->Authorization_Realm);
+		// 	// Get_Auth(&lpData->Cmd_Str[i], "response=", lpData->Authorization_Response);
+		// 	// Get_Auth(&lpData->Cmd_Str[i], "uri=", lpData->Authorization_Uri);
+		// 	// Get_Auth(&lpData->Cmd_Str[i], "username=", lpData->Authorization_Username);
+		// }
+		if ( //(strlen(lpData->Authorization_Algorithm)>0) &&
+			(lpData->Authorization_Nonce[0]) &&
+			(lpData->Authorization_Realm[0]) &&
+			// (lpData->Authorization_Response[0]) &&
+			(lpData->Authorization_Uri[0]) &&
+			(lpData->Authorization_Username[0]) &&
+#if OPAQUE_SUPPORT
+			(lpData->Authorization_Opaque[0]) &&
+#endif
+			(Password[0]))
 		{
 			if (!strcmp(lpData->Command, "REGISTER"))
 			{
 				if (Reg_Auth_Level == 2 || Reg_Auth_Level == 4)
 					strcpy(lpData->Authorization_Nonce, SIP_OnLine_Data[Online_Cur].Nonce);
-				MD5(lpData->Authorization_Algorithm, lpData->Command, lpData->Authorization_Username, lpData->Authorization_Uri, Password, lpData->Authorization_Realm, lpData->Authorization_Nonce, Response);
+				// MD5(lpData->Authorization_Algorithm, lpData->Command, lpData->Authorization_Username, lpData->Authorization_Uri, Password, lpData->Authorization_Realm, lpData->Authorization_Nonce, Response);
+				MD5_M(lpData->Authorization_Algorithm, lpData->Command, lpData->Authorization_Username, lpData->Authorization_Uri, Password, lpData->Authorization_Realm, lpData->Authorization_Nonce, lpData->Authorization_NC, lpData->Authorization_CNonce, lpData->Authorization_Qop, Response);
 				SIP_OnLine_Data[Online_Cur].Auth_OK = TRUE;
-				// SIP_OnLine_Data[Online_Cur].MD5_OK = (!strcmp(lpData->Authorization_Response, Response)) ? TRUE : FALSE;
+				if (lpData->IMS_3GPP_Flag)
+				{
+					SIP_OnLine_Data[Online_Cur].MD5_OK = (lpData->Authorization_Nonce[0]) ? TRUE : FALSE;
+				}
+				else
+					SIP_OnLine_Data[Online_Cur].MD5_OK = (!strcmp(lpData->Authorization_Response, Response)) ? TRUE : FALSE;
 
+				DTrace_CommonMsg("Authorization_Nonce=%s\r\n"
+								 "Authorization_Realm=%s\r\n"
+								 "Authorization_Response=%s\r\n"
+								 "Authorization_Uri=%s\r\n"
+								 "Authorization_Username=%s\r\n"
+								 ", %d @ %s\n\n",
+								 lpData->Authorization_Nonce,
+								 lpData->Authorization_Realm,
+								 lpData->Authorization_Response,
+								 lpData->Authorization_Uri,
+								 lpData->Authorization_Username,
+								 __LINE__, __FILE__);
 			}
 			else
 			{
 				if (Proxy_Auth_Level == 3)
 					strcpy(lpData->Authorization_Nonce, SIP_OnLine_Data[Online_Cur].Proxy_Nonce);
-				MD5(lpData->Authorization_Algorithm, lpData->Command, lpData->Authorization_Username, lpData->Authorization_Uri, Password, lpData->Authorization_Realm, lpData->Authorization_Nonce, Response);
+				// MD5(lpData->Authorization_Algorithm, lpData->Command, lpData->Authorization_Username, lpData->Authorization_Uri, Password, lpData->Authorization_Realm, lpData->Authorization_Nonce, Response);
+				MD5_M(lpData->Authorization_Algorithm, lpData->Command, lpData->Authorization_Username, lpData->Authorization_Uri, Password, lpData->Authorization_Realm, lpData->Authorization_Nonce, lpData->Authorization_NC, lpData->Authorization_CNonce, lpData->Authorization_Qop, Response);
 				SIP_OnLine_Data[Online_Cur].Proxy_Auth_OK = TRUE;
 				SIP_OnLine_Data[Online_Cur].Proxy_MD5_OK = (!strcmp(lpData->Authorization_Response, Response)) ? TRUE : FALSE;
 			}
@@ -3180,31 +3617,50 @@ int CSIP_Server::Update_Expire(SIP_MSG *lpData, int Online_Cur)
 
 int CSIP_Server::Proc_Auth(SIP_MSG *lpSIP_Msg, int Command_Cur, int Online_Cur, const char *Command)
 {
-	char Algorithm[100], Realm[100], Nonce[100];
+	CRASH_DEBUG_COMMAND;
+	char Algorithm[100], Realm[100], Nonce[100], Qop[10], Opaque[100];
 
 	Update_Command_By_Response(Command_Cur, lpSIP_Msg);
-	strcpy(Command_Data[Command_Cur].Response_SIP_Msg.Command, Command);
+	Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.Command, Command, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.Command));
+	DTrace_TestMsg("Proc_Auth, Command=%s, lpSIP_Msg->From=%s, lpSIP_Msg->To=%s, lpSIP_Msg->CallId=%s\n"
+					"Response_SIP_Msg.From=%s, Response_SIP_Msg.To=%s, Response_SIP_Msg.CallId=%s, %d @ %s\n", 
+		Command, lpSIP_Msg->From_Name, lpSIP_Msg->To_Name, lpSIP_Msg->CallerID,
+		Command_Data[Command_Cur].Response_SIP_Msg.From_Name, Command_Data[Command_Cur].Response_SIP_Msg.To_Name, Command_Data[Command_Cur].Response_SIP_Msg.CallerID,
+		__LINE__, __FILE__);
 	// Assign Auth Param
-	sprintf(Algorithm, "MD5");
-	sprintf(Realm, "%s", lpSIP_Msg->FromDest.Real_IP);
-	sprintf(Nonce, "%dntut%dhsf%lu", rand() ^ 0xA756, rand(), JGetTickCount());
+	if (lpSIP_Msg->IMS_3GPP_Flag)
+		sprintf(Algorithm, "AKAv1-MD5");
+	else
+		sprintf(Algorithm, "MD5");
+	Jstrncpy(Realm, lpSIP_Msg->From_URL, sizeof(Realm));
+	Jsprintf(Nonce, sizeof(Nonce), "%dVoip%dSIP%lu", rand() ^ 0xA756, rand(), JGetTickCount());
+	Jsprintf(Qop, sizeof(Qop), "auth"); // qop-value: "", "auth", "auth-int"
+	Jsprintf(Opaque, sizeof(Opaque), "%d%d%lu", rand() ^ 0xB783, rand(), JGetTickCount());
+
 	if (!strcmp(Command, "401"))
-	{ // Set Auth param assign a Nonce
-		strcpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Algorithm, Algorithm);
-		strcpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Realm, Realm);
-		strcpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Nonce, Nonce);
+	{
+		// Set Auth param assign a Nonce
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Algorithm, Algorithm, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Algorithm));
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Realm, Realm, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Realm));
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Nonce, Nonce, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Nonce));
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Qop, Qop, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Qop));
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Opaque, Opaque, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Opaque));
 		// Save Nonce
-		strcpy(SIP_OnLine_Data[Online_Cur].Nonce, Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Nonce);
+		Jstrncpy(SIP_OnLine_Data[Online_Cur].Nonce, Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Nonce, sizeof(SIP_OnLine_Data[Online_Cur].Nonce));
 	}
 	else
-	{ // Set Auth param assign a Nonce
-		strcpy(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Algorithm, Algorithm);
-		strcpy(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Realm, Realm);
-		strcpy(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Nonce, Nonce);
+	{
+		// Set Auth param assign a Nonce
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Algorithm, Algorithm, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Algorithm));
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Realm, Realm, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Realm));
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Nonce, Nonce, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Nonce));
+		Jstrncpy(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Qop, Qop, sizeof(Command_Data[Command_Cur].Response_SIP_Msg.WWW_Authenticate_Qop));
 		// Save Nonce
-		strcpy(SIP_OnLine_Data[Online_Cur].Proxy_Nonce, Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Nonce);
+		Jstrncpy(SIP_OnLine_Data[Online_Cur].Proxy_Nonce, Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Nonce, sizeof(SIP_OnLine_Data[Online_Cur].Proxy_Nonce));
+		// Jstrncpy(SIP_OnLine_Data[Online_Cur].Proxy_Realm, Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Realm, sizeof(SIP_OnLine_Data[Online_Cur].Proxy_Realm));
+		// Jstrncpy(SIP_OnLine_Data[Online_Cur].Proxy_Realm, Command_Data[Command_Cur].Response_SIP_Msg.Proxy_Authenticate_Realm, sizeof(SIP_OnLine_Data[Online_Cur].Proxy_Realm));
 	}
-	return 0;
+	RETURN 0;
 }
 
 int CSIP_Server::Clear_OnLine(SIP_MSG *lpSIP_Data)
@@ -3227,6 +3683,7 @@ int CSIP_Server::Clear_OnLine(SIP_MSG *lpSIP_Data)
 
 int CSIP_Server::Clear_OnLine_By_Cur(int Cur)
 {
+	CRASH_DEBUG_COMMAND;
 	if (Cur >= 0)
 	{
 		// Clear Online_Data
@@ -3234,22 +3691,24 @@ int CSIP_Server::Clear_OnLine_By_Cur(int Cur)
 		SIP_OnLine_Data[Cur].Trunk_GW.clean_nc();
 		SIP_OnLine_Data[Cur].reset();
 		SIP_OnLine_Num--;
-		return 0;
+		RETURN 0;
 	}
 	else
-		return -1;
+	{
+		RETURN -1;
+	}
 }
 
 int CSIP_Server::Clean_All_OnLine_Data()
 {
 	CRASH_DEBUG_COMMAND;
-	for (int Cur=0; Cur<SIP_ONLINE_SIZE; Cur++)
+	for (int Cur = 0; Cur < SIP_ONLINE_SIZE; Cur++)
 	{
-		if (SIP_OnLine_Data[Cur].Flag)	Clear_OnLine_By_Cur(Cur);
+		if (SIP_OnLine_Data[Cur].Flag)
+			Clear_OnLine_By_Cur(Cur);
 	}
 	RETURN 0;
 }
-
 
 // ====================================================================================
 int CSIP_Server::Extract_Param(char *S1, const char *Head, char *Param)
@@ -3401,6 +3860,53 @@ int CSIP_Server::Modify_SDP(SIP_MSG *lpData, char *IP, char *FPort, char *TPort)
 	return 0;
 }
 
+int CSIP_Server::Modify_SDP(SIP_MSG *lpData, char *IP, uint16_t FPort, uint16_t TPort)
+{
+	int Old_Len, i, j, k;
+	char S1[SIP_MSG_LEGNTH], Buf[100], Port[16];
+
+	Old_Len = strlen(lpData->SDP);
+	i = Modify_Param(lpData->SDP, " IN IP4", IP);
+	i = Modify_Param(lpData->SDP, "c=IN IP4", IP);
+	// 補Quintum Gate有兩個"C=IN IP4" 的問題
+	if ((k = Get_Position(lpData->SDP, "c=IN IP4")) > 0)
+		i = Modify_Param(&lpData->SDP[k + strlen("c=IN IP4")], "c=IN IP4", IP);
+	// 支援新舊版，INVITE時TPort都不為0, 表示為新版取TPort, 其他情形皆取FPort
+	if (!strcmp(lpData->Command, "INVITE") && TPort!=0)
+		sprintf(Port, "%d", TPort);
+	else
+		sprintf(Port, "%d", FPort);
+	i = Modify_Param(lpData->SDP, "m=audio", Port);
+	if (i < 0)
+		i = Modify_Param(lpData->SDP, "m=image", Port);
+	Old_Len -= strlen(lpData->SDP);
+	i = atoi(lpData->Content_Length) - Old_Len;
+	sprintf(lpData->Content_Length, "%d", i);
+	sprintf(Buf, "Content-Length: %d", i);
+
+	if ((i = Get_Position(lpData->Cmd_Str, "Content-Length:")) > 0)
+	{
+		for (j = i; j < (int)strlen(lpData->Cmd_Str); j++)
+			if ((lpData->Cmd_Str[j] == 0x0a) || (lpData->Cmd_Str[j] == 0x0d))
+				break;
+		strncpy(S1, lpData->Cmd_Str, i);
+		S1[i] = 0;
+		strcat(S1, Buf);
+		strcat(S1, &lpData->Cmd_Str[j]);
+		strcpy(lpData->Cmd_Str, S1);
+	}
+
+	if ((i = Get_Position(lpData->Cmd_Str, "v=")) > 0)
+	{
+		strncpy(S1, lpData->Cmd_Str, i);
+		S1[i] = 0;
+		strcat(S1, lpData->SDP);
+		strcpy(lpData->Cmd_Str, S1);
+	}
+
+	return 0;
+}
+
 int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int Via_Flag, int Send_Flag)
 {
 	if (!Command || !lpSIP_Data)
@@ -3416,6 +3922,8 @@ int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int 
 
 	int i, j, k, l, n, Len, Msg_Len;
 	char S1[SIP_MSG_LEGNTH], Buf[512], Buf1[100], SS2[640], TPort[16], URL[256];
+	// char local_ip[64];
+	uint16_t local_port;
 	// WSADATA			wsadata;
 	SIP_MSG Temp_SIP_Msg;
 	sockaddr_mix Server_Addr;
@@ -3427,6 +3935,9 @@ int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int 
 		// lpSIP_Data->pNc = &lpSIP_Data->FromNc;
 		// lpSIP_Data->pAddr = &lpSIP_Data->FAddr;
 		// Crypto_Type = lpSIP_Data->From_Crypto_Type;
+		// NetMakeAddrStr(lpSIP_Data->FromDest.pNc->Laddr, local_ip);
+		local_port = ntohs(lpSIP_Data->FromDest.pNc->Laddr.sin_port);
+		// DTrace_TestMsg("lpSIP_Data->FromDest.is_used=%d, Addr=%s:%d\n",lpSIP_Data->FromDest.is_used(), inet_ntoa(lpSIP_Data->FromDest.pNc->Laddr.sin_addr), ntohs(lpSIP_Data->FromDest.pNc->Laddr.sin_port));
 	}
 	else if (Send_Flag == TO)
 	{
@@ -3434,6 +3945,9 @@ int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int 
 		// lpSIP_Data->pNc = &lpSIP_Data->ToNc;
 		// lpSIP_Data->pAddr = &lpSIP_Data->TAddr;
 		// Crypto_Type = lpSIP_Data->To_Crypto_Type;
+		// NetMakeAddrStr(lpSIP_Data->ToDest.pNc->Laddr, local_ip);
+		local_port = ntohs(lpSIP_Data->ToDest.pNc->Laddr.sin_port);
+		// DTrace_TestMsg("lpSIP_Data->FromDest.is_used=%d, Addr=%s:%d\n",lpSIP_Data->ToDest.is_used(), inet_ntoa(lpSIP_Data->ToDest.pNc->Laddr.sin_addr), ntohs(lpSIP_Data->ToDest.pNc->Laddr.sin_port));
 	}
 	else
 		lpSIP_Data->pDest = NULL;
@@ -3480,7 +3994,7 @@ int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int 
 	// != 183/200/INVITE, 去除 SDP
 	if (atoi(lpSIP_Data->Content_Length) > 0) //strlen(lpSIP_Data->SDP)>0)
 	{										  // Remove SDP
-		if (strcmp(Command, "183") && strcmp(Command, "200") && strcmp(Command, "INVITE"))
+		if (strcmp(Command, "183") && strcmp(Command, "200") && strcmp(Command, "INVITE") && strcmp(Command, "UPDATE"))
 		{
 			if ((i = Get_Position(S1, "v=")) > 0)
 				S1[i] = 0;
@@ -3512,41 +4026,49 @@ int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int 
 	}
 
 	// INVITE, Modify Contact's URL for "ACK", Add Record-Route: is another solution
-	if ((i = Get_Position(S1, "Contact:")) > 0)
+	if (strcmp(lpSIP_Data->CSeq, "REGISTER"))
 	{
-		for (j = i; j < (int)strlen(S1); j++)
-			if (S1[j] == '@')
-			{
-				j++;
-				break;
-			}
-		for (k = j; k < (int)strlen(S1); k++)
-			if ((S1[k] == '>') || (S1[k] == 0x0a) || (S1[k] == 0x0d))
-			{
-				break;
-			}
-
-		Deletion(S1, j, k - 1);
-		Insertion(S1, j, Local_IP);
+		Jsprintf(Buf, sizeof(Buf), "%s:%d", Local_IP, local_port);
+		printf("New Contact: %s\n", Buf);
+		if (Edit_URL(S1, sizeof(S1), "Contact:", Buf) == -2)
+			Edit_URL(S1, sizeof(S1), "m: ", Buf);
 	}
 
-	// INVITE 內之 Auth 於 Response 時, 需去除之
-	if (((i = Get_Position(S1, "Authorization:")) > 0) && (Command[0] >= 0x30) && (Command[0] <= 0x39))
-	{
-		if ((k = Get_NextLine(&S1[i])) > 0)
-		{
-			k += i;
-			Deletion(S1, i, k - 1);
-		}
-	}
-	else if (((i = Get_Position(S1, "Proxy-Authorization:")) > 0) && !(Command[0] >= 0x30 && Command[0] <= 0x39))
-	{
-		if ((k = Get_NextLine(&S1[i])) > 0)
-		{
-			k += i;
-			Deletion(S1, i, k - 1);
-		}
-	}
+	// if ((i = Get_Position(S1, "Contact:")) > 0)
+	// {
+	// 	for (j = i; j < (int)strlen(S1); j++)
+	// 		if (S1[j] == '@')
+	// 		{
+	// 			j++;
+	// 			break;
+	// 		}
+	// 	for (k = j; k < (int)strlen(S1); k++)
+	// 		if ((S1[k] == '>') || (S1[k] == 0x0a) || (S1[k] == 0x0d))
+	// 		{
+	// 			break;
+	// 		}
+
+	// 	Deletion(S1, j, k - 1);
+	// 	Insertion(S1, j, Local_IP);
+	// }
+
+	// // INVITE 內之 Auth 於 Response 時, 需去除之
+	// if (((i = Get_Position(S1, "Authorization:")) > 0) && (Command[0] >= 0x30) && (Command[0] <= 0x39))
+	// {
+	// 	if ((k = Get_NextLine(&S1[i])) > 0)
+	// 	{
+	// 		k += i;
+	// 		Deletion(S1, i, k - 1);
+	// 	}
+	// }
+	// else if (((i = Get_Position(S1, "Proxy-Authorization:")) > 0) && !(Command[0] >= 0x30 && Command[0] <= 0x39))
+	// {
+	// 	if ((k = Get_NextLine(&S1[i])) > 0)
+	// 	{
+	// 		k += i;
+	// 		Deletion(S1, i, k - 1);
+	// 	}
+	// }
 
 	// Add or Modify Record-Route:
 	if ((Command[0] >= 0x30) && (Command[0] <= 0x39))
@@ -3588,7 +4110,7 @@ int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int 
 			}
 		}
 		else
-			Edit_URL(S1, "Contact:", Local_IP);
+			Edit_URL(S1, sizeof(S1), "Contact:", Local_IP);
 	}
 
 	// 3. Send to Remote
@@ -3607,6 +4129,73 @@ int CSIP_Server::Send_SIP_Command(const char *Command, SIP_MSG *lpSIP_Data, int 
 
 		m_lpNetIF->NetNcSend(lpSIP_Data->pDest->pNc, S1, Msg_Len, &lpSIP_Data->pDest->Raddr);
 	}
+}
+
+int CSIP_Server::Send_SIPCQI1_Command(COMMAND_QUEUE *lpCommand, char* s1ap_server_ip, uint16_t s1ap_server_port)
+{
+	CRASH_DEBUG_COMMAND;
+	if (!lpCommand || !s1ap_server_ip || !s1ap_server_ip[0])	{RETURN -1;}
+
+	if (lpCommand->SipCqi1_Flag)	{RETURN -2;}
+	lpCommand->SipCqi1_Flag = true;
+	
+	
+	char aSIP_CQI1[256];
+	std::string timestr;
+	std::string from_phone_id, to_phone_id;
+	char *from_sdp_ip, *from_external_sdp_ip;
+	char *to_sdp_ip, *to_external_sdp_ip;
+	uint16_t from_sdp_port, from_external_sdp_port;
+	uint16_t to_sdp_port, to_external_sdp_port;
+
+	from_sdp_ip = lpCommand->From_SDP_IP;
+	to_sdp_ip = lpCommand->To_SDP_IP;
+	from_sdp_port = lpCommand->From_SDP_Audio_Port;
+	to_sdp_port = lpCommand->To_SDP_Audio_Port;
+	if (lpCommand->SIP_Msg.RTP_Relay_Flag && lpCommand->Relay_UDP_IP[0])
+	{
+		from_external_sdp_ip = lpCommand->Relay_UDP_IP;
+		to_external_sdp_ip = lpCommand->Relay_UDP_IP;
+		from_external_sdp_port = Jatoi(lpCommand->Relay_UDP_TPort);
+		to_external_sdp_port = Jatoi(lpCommand->Relay_UDP_FPort);
+	}
+	else
+	{
+		from_external_sdp_ip = lpCommand->From_External_SDP_IP;
+		to_external_sdp_ip = lpCommand->To_External_SDP_IP;
+		from_external_sdp_port = lpCommand->From_External_SDP_Audio_Port;
+		to_external_sdp_port = lpCommand->To_External_SDP_Audio_Port;
+	}
+	from_phone_id = string_JTransfer_BinaryToHexStr(JTransfer_HexNumStrToHexBinary((lpCommand->FromPhoneId[0])? lpCommand->FromPhoneId:"000000000000000", 15), 15);
+	to_phone_id = string_JTransfer_BinaryToHexStr(JTransfer_HexNumStrToHexBinary((lpCommand->ToPhoneId[0])? lpCommand->ToPhoneId:"000000000000000", 15), 15);
+	DTrace_TestMsg("Send_SIPCQI1_Command, from_phone_id=%s, to_phone_id=%s, %d @ %s\n", from_phone_id.c_str(), to_phone_id.c_str(), __LINE__, __FILE__);
+
+	//--- send 0SIP_CQI1 command
+	if (SIP_Alg_Flag)
+	{
+		sprintf(aSIP_CQI1, 	"0SIP_CQI1|"
+							"CallerId:%s|CallerIP:%08x|CallerPort:%04x|CallerExternalIP:%08x|CallerExternalPort:%04x|"
+							"CalleeId:%s|CalleeIP:%08x|CalleePort:%04x|CalleeExternalIP:%08x|CalleeExternalPort:%04x|", 
+			from_phone_id.c_str(), ntohl(inet_addr(from_sdp_ip)), from_sdp_port, ntohl(inet_addr(from_external_sdp_ip)), from_external_sdp_port,
+			to_phone_id.c_str(), ntohl(inet_addr(to_sdp_ip)), to_sdp_port, ntohl(inet_addr(to_external_sdp_ip)), to_external_sdp_port);
+	}
+	else
+	{
+		sprintf(aSIP_CQI1, 	"0SIP_CQI1|"
+							"CallerId:%s|CallerIP:%04x|CallerPort:%04x|"
+							"CalleeId:%s|CalleeIP:%08x|CalleePort:%04x|", 
+			from_phone_id.c_str(), ntohl(inet_addr(from_sdp_ip)), from_sdp_port,
+			to_phone_id.c_str(), ntohl(inet_addr(to_sdp_ip)), to_sdp_port);
+	}
+		
+	DTrace_TestMsg("Current time=%s, %d @ %s\n", Jstringftime(timestr,"%M:%S.%f",NULL).c_str(), __LINE__, __FILE__);
+	iovec	iov = {aSIP_CQI1, strlen(aSIP_CQI1)};
+	int ret = sctp_send_data(S1AP_Socket, &iov, 1); 
+	DTrace_TestMsg("send ret=%d (len=%d) %s, %d @ %s\n", ret, iov.iov_len, aSIP_CQI1, __LINE__, __FILE__);
+	DTrace_TestMsg("Current time=%s, %d @ %s\n", Jstringftime(timestr,"%M:%S.%f",NULL).c_str(), __LINE__, __FILE__);
+
+	sleep(2);
+	RETURN 0;
 }
 
 int CSIP_Server::Delete_Via(char *S1)
@@ -3683,6 +4272,7 @@ int CSIP_Server::Delete_Record_Route(char *S1)
 int CSIP_Server::SIP_Message_Analyzer(NetConnect_t *nc, sockaddr_mix *lpAddr, char *S1, SIP_MSG *Data, CRYPTO_TYPE Crypto_Type)
 {
 	CRASH_DEBUG_COMMAND;
+	DTrace_CommonMsg("-------------------------------------------\n");
 	int i, Cur, Cmd = -1, Error_Code;
 	char S2[SIP_MSG_LEGNTH];
 
@@ -3701,7 +4291,6 @@ int CSIP_Server::SIP_Message_Analyzer(NetConnect_t *nc, sockaddr_mix *lpAddr, ch
 	// Data->Authorization_Algorithm[0] = Data->Authorization_Nonce[0] = Data->Authorization_Realm[0] = Data->Authorization_Response[0] = Data->Authorization_Uri[0] = Data->Authorization_Username[0] = 0;
 	// Data->Authorization_Flag = FALSE;
 
-	CRASH_DEBUG_COMMAND;
 	// 1. Get SIP_Command
 	for (i = 0; i < SIP_COMMAND_NO; i++)
 	{
@@ -3734,6 +4323,7 @@ int CSIP_Server::SIP_Message_Analyzer(NetConnect_t *nc, sockaddr_mix *lpAddr, ch
 		Cur = Filter_String(S1, "Contact:", Data->Contact_Name, Data->Contact_URL, Data->Contact_Port, Data->Contact_Tag, Data->Contact_Branch, Data->Contact_expires, &Data->Contact_Flag);		// , &Name_Locate[0]);
 		Cur = Filter_String(S1, "Call-ID:", Data->CallerID_Name, Data->CallerID_URL, Data->CallerID_Port, Data->CallerID_Tag, Data->CallerID_Branch, Data->CallerID_expires, &Data->CallerID_Flag); // , &Name_Locate[0]);
 		Cur = Filter_String(S1, "Refer-To:", Data->ReferTo_Name, Data->ReferTo_URL, Data->ReferTo_Port, Data->ReferTo_Tag, Data->ReferTo_Branch, Data->ReferTo_expires, &Data->ReferTo_Flag);		// ,&Name_Locate[0]);
+		DTrace_TestMsg("Command=%s, From_Name=%s, To_Name=%s\n", Data->Command, Data->From_Name, Data->To_Name);
 
 		// 2.3 CSeq/Expires/Content-Length/Max-Forwards
 		Get_Field(S1, "Call-ID:", Data->CallerID);
@@ -3742,8 +4332,52 @@ int CSIP_Server::SIP_Message_Analyzer(NetConnect_t *nc, sockaddr_mix *lpAddr, ch
 			strcpy(Data->Expires, Data->Contact_expires); // in some situations, there is no Expries header, however the expiires is set within Contact header
 		Get_Field(S1, "Content-Length:", Data->Content_Length);
 		if (atoi(Data->Content_Length) > 0)
+		{
 			Get_SDP(S1, Data->SDP);
+			if ((strlen(Data->SDP) > 0))
+			{ 
+				Extract_Param(Data->SDP, "c=IN IP4", Data->SDP_IP);
+				Extract_Param(Data->SDP, "m=audio", Data->SDP_Audio_Port);
+				Extract_Param(Data->SDP, "m=image", Data->SDP_Image_Port);
+			}
+		}
 		Get_Field(S1, "User-Agent:", Data->User_Agent);
+
+		// Determine whether the packet come from 3GPP system
+		Get_Field(S1, "P-Access-Network-Info:", S2);
+		if (S2[0])
+			Data->IMS_3GPP_Flag = true;
+
+		// Get Supported
+		Get_Supported(TRUE, S1, Data);
+		// Get Require
+		Get_Supported(FALSE, S1, Data);
+		if (Data->Require_100rel)
+			Get_Field(S1, "RSeq:", Data->RSeq);
+
+		// Get Authorization
+		if (!strcmp(Data->Command, "REGISTER") || !strcmp(Data->Command, "INVITE") ||
+			!strcmp(Data->Command, "ACK") || !strcmp(Data->Command, "BYE") ||
+			!strcmp(Data->Command, "CANCEL") || !strcmp(Data->Command, "PRACK") ||
+			!strcmp(Data->Command, "UPDATE"))
+		{
+			if ((i = Get_Position(Data->Cmd_Str, "Authorization:")) < 0)
+				i = Get_Position(Data->Cmd_Str, "Proxy-Authorization:");
+			if (i >= 0)
+			{
+				Get_Auth(&Data->Cmd_Str[i], "algorithm=", Data->Authorization_Algorithm);
+				Get_Auth(&Data->Cmd_Str[i], "nonce=", Data->Authorization_Nonce);
+				Get_Auth(&Data->Cmd_Str[i], "opaque=", Data->Authorization_Opaque);
+				Get_Auth(&Data->Cmd_Str[i], "realm=", Data->Authorization_Realm);
+				Get_Auth(&Data->Cmd_Str[i], "response=", Data->Authorization_Response);
+				Get_Auth(&Data->Cmd_Str[i], "uri=", Data->Authorization_Uri);
+				Get_Auth(&Data->Cmd_Str[i], "username=", Data->Authorization_Username);
+				//
+				Get_Auth(&Data->Cmd_Str[i], "qop=", Data->Authorization_Qop);
+				Get_Auth(&Data->Cmd_Str[i], "cnonce=", Data->Authorization_CNonce);
+				Get_Auth(&Data->Cmd_Str[i], "nc=", Data->Authorization_NC);
+			}
+		}
 
 		// Debug用
 		if (!strcmp(Data->Command, "200"))
@@ -3752,9 +4386,8 @@ int CSIP_Server::SIP_Message_Analyzer(NetConnect_t *nc, sockaddr_mix *lpAddr, ch
 		// 2.4 Socket/Addr
 		if (Cmd != (SIP_COMMAND_NO - 1))
 		{
-			CRASH_DEBUG_COMMAND;
 			Data->FromDest.pack(nc, lpAddr, NULL, Data->Via_URL, Crypto_Type);
-			CRASH_DEBUG_COMMAND;
+			DTrace_TestMsg("Data->FromDest.is_used=%d, FromDest.Addr=%s:%d, IP=%s, Port=%d\n",Data->FromDest.is_used(), inet_ntoa(Data->FromDest.Raddr.sin_addr), ntohs(Data->FromDest.Raddr.sin_port), Data->FromDest.Real_IP, Data->FromDest.Port);
 			// Data->FromNc.copy_from(nc);
 			// memcpy(&Data->FAddr, lpAddr, sizeof(Data->FAddr));
 			// strcpy(Data->FV_IP, Data->Via_URL);
@@ -3777,6 +4410,7 @@ int CSIP_Server::SIP_Message_Analyzer(NetConnect_t *nc, sockaddr_mix *lpAddr, ch
 		else
 		{
 			Data->ToDest.pack(nc, lpAddr, NULL, Data->Contact_URL, Crypto_Type);
+			DTrace_TestMsg("Data->ToDest.is_used=%d, Addr=%s:%d, IP=%s, Port=%d\n",Data->ToDest.is_used(), inet_ntoa(Data->ToDest.pNc->Laddr.sin_addr), ntohs(Data->ToDest.pNc->Laddr.sin_port), Data->ToDest.Real_IP, Data->ToDest.Port);
 			// Data->ToNc.copy_from(nc);
 			// memcpy(&Data->TAddr, lpAddr, sizeof(Data->TAddr));
 			// strcpy(Data->TV_IP, Data->Contact_URL);
@@ -4400,6 +5034,7 @@ int CSIP_Server::Check_Calling_Party(SIP_MSG *Data)
 
 	if ((Command_Cur = Check_Command(Data)) >= 0)
 	{
+		CRASH_DEBUG_COMMAND;
 		if ((Online_Cur = Check_OnLine(Data->From_Name, &Command_Data[Command_Cur].SIP_Msg.FromDest.Raddr)) >= 0)
 		{
 			Data->FromDest.copy_from(&SIP_OnLine_Data[Online_Cur].Dest);
@@ -4412,10 +5047,10 @@ int CSIP_Server::Check_Calling_Party(SIP_MSG *Data)
 			if ((atoi(Data->Content_Length) > 0) && (strlen(Data->SDP) > 0))
 			{ //Get_SDP(S1, Data->SDP);
 				Data->RTP_Relay_Flag = TRUE;
-				i = Extract_Param(Data->SDP, "c=IN IP4", Data->SDP_IP);
-				i = Extract_Param(Data->SDP, "m=audio", Data->SDP_Port);
-				if (i < 0)
-					i = Extract_Param(Data->SDP, "m=image", Data->SDP_Port);
+				// i = Extract_Param(Data->SDP, "c=IN IP4", Data->SDP_IP);
+				// i = Extract_Param(Data->SDP, "m=audio", Data->SDP_Port);
+				// if (i < 0)
+				// 	i = Extract_Param(Data->SDP, "m=image", Data->SDP_Port);
 			}
 		}
 		else
@@ -4442,7 +5077,7 @@ int CSIP_Server::Check_Called_Party(SIP_MSG *Data)
 		// GateWay_Data.Nc.copy_from(&NTUT_GW_Nc);
 		// memcpy(&GateWay_Data.Addr, &NTUT_GW_Addr, sizeof(GateWay_Data.Addr));
 		// strcpy(GateWay_Data.R_IP, NTUT_GW_IP);
-		// GateWay_Data.Port = Jatoi(NTUT_GW_Port, sizeof(NTUT_GW_Port));
+		// GateWay_Data.Port = Jatoi(NTUT_GW_Port);
 		// GateWay_Data.Crypto_Type = NTUT_GW_Crypto_Type;
 		// Set Forwarding_GW_Flag
 		Data->Forwarding_GW_Flag = strcmp(Data->FromDest.Real_IP, GateWay_Data.Real_IP) &&				   // Condition 1: 若是從GW送過來的封包將走PC to PC
@@ -4452,6 +5087,7 @@ int CSIP_Server::Check_Called_Party(SIP_MSG *Data)
 		strcpy(Data->Cancel_Branch, SIP_Invite_Data[Invite_Cur].Cancel_Branch);
 	}
 
+	DTrace_TestMsg("Data->From_Name=%s, Data->To_Name=%s, %d @ %s\n", Data->From_Name, Data->To_Name, __LINE__, __FILE__);
 	// PC to PC(Sub-Server)
 	if (OutBound_SubServer_Filter(Data, &Connect_Data))
 	{
@@ -4468,6 +5104,9 @@ int CSIP_Server::Check_Called_Party(SIP_MSG *Data)
 	else if ((Online_TCur = Check_OnLine(Data->To_Name)) >= 0 && !Data->Forwarding_GW_Flag)
 	{
 		Data->ToDest.copy_from(&SIP_OnLine_Data[Online_TCur].Dest);
+		if (SIP_OnLine_Data[Online_TCur].PhoneId[0])
+			Jstrcpy(Data->ToPhoneId, SIP_OnLine_Data[Online_TCur].PhoneId);
+		DTrace_TestMsg("Check_Called_Party, Data=0x%x, Data->ToPhoneId=%s\n", Data, Data->ToPhoneId);
 		// Data->ToNc.copy_from(&SIP_OnLine_Data[Online_TCur].Nc);
 		// memcpy(&Data->TAddr, &SIP_OnLine_Data[Online_TCur].Addr, sizeof(Data->TAddr));
 		// strcpy(Data->TV_IP, SIP_OnLine_Data[Online_TCur].V_IP);
@@ -4772,6 +5411,17 @@ int CSIP_Server::Filter_String(char *S1, const char *S2, char *Name, char *URL, 
 			//Name_Locate[0]=i+1; Name_Locate[1]=Name_Locate[0]+Mid-i-2;
 		}
 		//if (strlen(Name)>0) Get Name1
+	}
+	else if (Mid2 > 0)
+	{
+		for (i = Mid2 - 1; i >= Beg; i--)
+			if ((S1[i] == ';') || (S1[i] == ':') || (S1[i] == '<') || (S1[i] == ' '))
+				break;
+		if ((i != (Beg - 1)) && ((Mid2 - i - 1) > 0) && ((Mid2 - i - 1) < SIP_NAME_LENGTH))
+		{
+			memcpy(Name, &S1[i + 1], Mid2 - i - 1);
+			Name[Mid2 - i - 1] = 0;
+		}
 	}
 
 	// 6. Get URL
@@ -5091,6 +5741,7 @@ int CSIP_Server::Get_CSeq_Num(char *S1, const char *Head, char *Buf)
 
 int CSIP_Server::Modify_CSeq(char *S1, const char *Head)
 {
+	CRASH_DEBUG_COMMAND;
 	int i, j, k, Beg, End;
 	char SS1[SIP_MSG_LEGNTH];
 	Beg = End = 0;
@@ -5121,13 +5772,17 @@ int CSIP_Server::Modify_CSeq(char *S1, const char *Head)
 			strcat(SS1, Head);
 			strcat(SS1, &S1[End + 1]);
 			strcpy(S1, SS1);
-			return 0;
+			RETURN 0;
 		}
 		else
-			return -1;
+		{
+			RETURN - 1;
+		}
 	}
 	else
-		return -1;
+	{
+		RETURN - 1;
+	}
 }
 
 int CSIP_Server::Get_Position(char *S1, const char *Head)
@@ -5314,7 +5969,7 @@ int CSIP_Server::Get_Auth(char *S1, const char *Head, char *Buf)
 	if ((i = Get_Position(S1, Head)) > 0)
 	{
 		for (j = i + strlen(Head); j < (int)strlen(S1); j++)
-			if ((S1[j] != 0x20) && (S1[j] != 0x0a) && (S1[j] != 0x0d) && (S1[j] != '"'))
+			if ((S1[j] != 0x20) && (S1[j] != 0x0a) && (S1[j] != 0x0d)) // && (S1[j] != '"'))
 			{
 				Beg = j;
 				break;
@@ -5328,10 +5983,65 @@ int CSIP_Server::Get_Auth(char *S1, const char *Head, char *Buf)
 				}
 		if ((End >= Beg) && (Beg > 0))
 		{
-			strncpy(Buf, &S1[Beg], (End - Beg + 1));
-			Buf[End - Beg + 1] = 0;
+			if (!(End == Beg && S1[Beg] == '"'))
+			{
+				if (S1[Beg] == '"')
+					Beg++;
+				strncpy(Buf, &S1[Beg], (End - Beg + 1));
+				Buf[End - Beg + 1] = 0;
+			}
 		}
 	}
+	return 0;
+}
+
+int CSIP_Server::Add_Header(char *Cmd_Msg, size_t CM_size, const char *Header, const char *Field, const char *Upper_Head1, const char *Upper_Head2)
+{
+	int i, j;
+	char Buf[500];
+
+	if ((i = Get_Position(Cmd_Msg, Upper_Head1)) < 0)
+	{
+		if (Upper_Head2 != NULL)
+		{
+			if ((i = Get_Position(Cmd_Msg, Upper_Head2)) < 0)
+			{
+				if ((i = Get_Position(Cmd_Msg, "Cseq:")) < 0)
+					return -1;
+			}
+		}
+		else if ((i = Get_Position(Cmd_Msg, "Cseq:")) < 0)
+			return -1;
+	}
+	if ((j = Get_NextLine(&Cmd_Msg[i])) < 0)
+		return -1;
+	else
+		i += j;
+	// There is ':' at the end of Header
+	if (Header[int(strlen(Header)) - 1] == ':')
+		Jsprintf(Buf, sizeof(Buf), "%s %s", Header, Field);
+	// There isn't ':' at the end of Header
+	else
+		Jsprintf(Buf, sizeof(Buf), "%s: %s", Header, Field);
+
+	// There is '\r\n' at the end of Field
+	if (Field[int(strlen(Field))] != '\r' && Field[int(strlen(Field))] != '\n')
+		Jstrncat(Buf, "\r\n", sizeof(Buf));
+	Insertion(Cmd_Msg, CM_size, i, Buf);
+	return 0;
+}
+
+int CSIP_Server::Delete_Param(char *S1, size_t S1_size, const char *Head) // ex: Head is "i="
+{
+	char *Start_Cur, *End_Cur;
+
+	if ((Start_Cur = strstr(S1, Head)) != NULL && (End_Cur = strstr(Start_Cur, "\r\n")) != NULL)
+	{
+		Deletion(S1, S1_size, Start_Cur - S1, End_Cur + 1 - S1);
+	}
+	else
+		return -1;
+
 	return 0;
 }
 
@@ -5351,6 +6061,22 @@ int CSIP_Server::Deletion(char *S1, int Beg, int End)
 		return -1;
 }
 
+int CSIP_Server::Deletion(char *S1, size_t S1_size, int Beg, int End)
+{
+	char SS1[SIP_MSG_LEGNTH];
+
+	if ((End < (int)strlen(S1)) && (End >= Beg) && (Beg >= 0))
+	{
+		strncpy(SS1, S1, Beg);
+		SS1[Beg] = 0;
+		Jstrncat(SS1, &S1[End + 1], sizeof(SS1));
+		Jstrncpy(S1, SS1, S1_size);
+		return 0;
+	}
+	else
+		return -1;
+}
+
 int CSIP_Server::Insertion(char *S1, int Beg, const char *Buf)
 {
 	char SS1[SIP_MSG_LEGNTH];
@@ -5362,6 +6088,23 @@ int CSIP_Server::Insertion(char *S1, int Beg, const char *Buf)
 		strcat(SS1, Buf);
 		strcat(SS1, &S1[Beg]);
 		strcpy(S1, SS1);
+		return 0;
+	}
+	else
+		return -1;
+}
+
+int CSIP_Server::Insertion(char *S1, size_t S1_size, int Beg, const char *Buf)
+{
+	char SS1[SIP_MSG_LEGNTH];
+
+	if ((Beg < (int)strlen(S1)) && (Beg >= 0))
+	{
+		strncpy(SS1, S1, Beg);
+		SS1[Beg] = 0;
+		Jstrncat(SS1, Buf, sizeof(SS1));
+		Jstrncat(SS1, &S1[Beg], sizeof(SS1));
+		Jstrncpy(S1, SS1, S1_size);
 		return 0;
 	}
 	else
@@ -5435,6 +6178,83 @@ int CSIP_Server::Get_Via(char *S1, char *ViaBuf)
 	}
 	return 0;
 }
+
+int CSIP_Server::Get_Line_Field(char *S1, const char *Head, char *Field, size_t Field_size)
+{
+	int i, Beg, End, Len;
+
+	Field[0] = Beg = End = 0;
+	if ((i = Get_Position(S1, Head)) > 0)
+	{
+		Beg = i + (int)strlen(Head);
+		for (i = Beg; i < (int)strlen(S1); i++)
+			if (S1[i] != ' ')
+			{
+				Beg = i;
+				break;
+			}
+		for (i = Beg; i < (int)strlen(S1); i++)
+			if ((S1[i] == 0x0a) || (S1[i] == 0x0d) || (S1[i] == ';'))
+			{
+				End = i - 1;
+				break;
+			}
+		Len = (End - Beg + 1 > Field_size) ? Field_size : End - Beg + 1;
+		if ((Beg != 0) && (Beg <= End))
+			strncpy(Field, &S1[Beg], Len);
+		Field[Len] = 0;
+		return Beg;
+	}
+	else
+		return -1;
+}
+
+int CSIP_Server::Get_Supported(bool Support_Require, char *S1, SIP_MSG *lpSIP_Msg)
+{
+	// Support_Require: TRUE: Supported, FALSE:Require
+	int i, j, Len, Beg, End;
+	char Buf[100], *Token;
+
+	if (Get_Line_Field(S1, (Support_Require) ? "Supported:" : "Require:", Buf, sizeof(Buf)) >= 0)
+	{
+		for (i = 0; (Token = strtok((i == 0) ? Buf : NULL, ",")); i++)
+		{
+			for (j = 0, Len = strlen(Token); j < Len; j++)
+				if (Token[j] != ' ')
+				{
+					Beg = j;
+					break;
+				}
+			for (j = Len - 1; j >= 0; j--)
+				if (Token[j] != ' ')
+				{
+					End = j;
+					break;
+				}
+			if (End > Beg)
+			{
+				if (!strncmp(&Token[Beg], "replaces", End - Beg + 1))
+				{
+					if (Support_Require)
+						lpSIP_Msg->Supported_Replaces = TRUE;
+					else
+						lpSIP_Msg->Require_Replaces = TRUE;
+				}
+				else if (!strncmp(&Token[Beg], "100rel", End - Beg + 1))
+				{
+					if (Support_Require)
+						lpSIP_Msg->Supported_100rel = TRUE;
+					else
+						lpSIP_Msg->Require_100rel = TRUE;
+				}
+			}
+			else
+				continue;
+		}
+	}
+	return 0;
+}
+
 int CSIP_Server::Add_Via111(char *S1, char *Port, const char *Branch)
 {
 	int j, Via_Beg[100], Via_Num = 0, i = 0;
@@ -5542,14 +6362,14 @@ int CSIP_Server::Clear_Invite_By_Cur(int Invite_Cur)
 int CSIP_Server::Clean_All_Invite_Data()
 {
 	CRASH_DEBUG_COMMAND;
-	for (int Cur=0; Cur<SIP_INVITE_SIZE ; Cur++)
+	for (int Cur = 0; Cur < SIP_INVITE_SIZE; Cur++)
 	{
 		if (SIP_Invite_Data[Cur].Flag == TRUE)
 		{
 			Clear_Invite_By_Cur(Cur);
 		}
 	}
-	SIP_Invite_Num=0;
+	SIP_Invite_Num = 0;
 	RETURN 0;
 }
 
@@ -5663,9 +6483,9 @@ int CSIP_Server::Write_Invite_Log(SIP_INVITE_DATA *lpInvite_Data, ANSWER_STATE S
 			strcpy(File_Name, Log_Path);
 			File_Name[j] = 0;
 		}
-		sprintf(File_Name, "%s\\%s", File_Name, Jstringftime(timestr, "%Y-%m-%d", &lpInvite_Data->Invite_Time)->c_str());
+		sprintf(File_Name, "%s\\%s", File_Name, Jstringftime(timestr, "%Y-%m-%d", &lpInvite_Data->Invite_Time).c_str());
 		Create_Directory(File_Name);
-		sprintf(File_Name, "%s\\INVITE_Log %s.txt", File_Name, Jstringftime(timestr, "%Y-%m-%d", &lpInvite_Data->Invite_Time)->c_str());
+		sprintf(File_Name, "%s\\INVITE_Log %s.txt", File_Name, Jstringftime(timestr, "%Y-%m-%d", &lpInvite_Data->Invite_Time).c_str());
 		if ((fp = fopen(File_Name, "a+")) == NULL)
 			return -1;
 		else
@@ -5690,7 +6510,7 @@ int CSIP_Server::Write_Invite_Log(SIP_INVITE_DATA *lpInvite_Data, ANSWER_STATE S
 			sprintf(S2, "%d", Item);
 			strncat(S2, "      ", (strlen(" Item ") - strlen(S2)) * sizeof(char));
 			// Date
-			sprintf(S2, "%s %s", S2, Jstringftime(timestr, "%Y/%m/%d", &lpInvite_Data->Invite_Time)->c_str());
+			sprintf(S2, "%s %s", S2, Jstringftime(timestr, "%Y/%m/%d", &lpInvite_Data->Invite_Time).c_str());
 			// Caller_Name (PhoneNo)-->
 			sprintf(S3, "%s (%s)", lpInvite_Data->From_User_Name, lpInvite_Data->From_PhoneNo);
 			i = strlen("Caller_Name (PhoneNo)") - strlen(S3);
@@ -5736,7 +6556,7 @@ int CSIP_Server::Write_Invite_Log(SIP_INVITE_DATA *lpInvite_Data, ANSWER_STATE S
 			}
 			else if (lpInvite_Data->Start_Time.time == 0)
 			{
-				sprintf(S2, "%s              %s              ", S2, Jstringftime(timestr, "%H:%M:%S", &lpInvite_Data->Invite_Time)->c_str());
+				sprintf(S2, "%s              %s              ", S2, Jstringftime(timestr, "%H:%M:%S", &lpInvite_Data->Invite_Time).c_str());
 			}
 			else
 				sprintf(S2, "%s                                    ", S2);
@@ -5786,7 +6606,6 @@ int CSIP_Server::Write_Call_Log(const char *Head, char *S1, SIP_MSG *lpSIP_Msg, 
 	}
 
 	char Answer_State_Table[10][20] = {"NoCall", "Inviting", "Abandon", "Answer", "Busy", "Forwarding", "Terminating", "Issue", "Temporary"};
-	char Command_State_Table[20][20] = {"SIP_READY", "SIP_INVITE", "SIP_CANCEL", "SIP_BYE", "SIP_100", "SIP_REG", "SIP_REFER", "SIP_NOTIFY", "SIP_ERROR", "SIP_TALK", "SIP_FAIL", "SIP_RELAY_CONNECT", "SIP_RELAY_READ", "SIP_200", "SIP_ACK", "SIP_PROXY_AUTH"};
 	std::string timestr;
 	// timeb	Time1;
 	// SYSTEMTIME	TimeDest;
@@ -5872,7 +6691,7 @@ int CSIP_Server::Write_Call_Log(const char *Head, char *S1, SIP_MSG *lpSIP_Msg, 
 					IP[0] = 0;
 					Port = 0;
 				}
-				fprintf(HsfOut1, "         << %s %s %s:%d  %s >>\r\n", szCrypto_Type, Head, IP, Port, Jstringftime(timestr, "%Y.%m.%d %H:%M:%S", NULL)->c_str());
+				fprintf(HsfOut1, "         << %s %s %s:%d  %s >>\r\n", szCrypto_Type, Head, IP, Port, Jstringftime(timestr, "%Y.%m.%d %H:%M:%S", NULL).c_str());
 				fprintf(HsfOut1, "%s\r\n\r\n", S1);
 				fclose(HsfOut1);
 			}
@@ -5922,11 +6741,11 @@ int CSIP_Server::Write_Call_Log(const char *Head, char *S1, SIP_MSG *lpSIP_Msg, 
 						Elapsed_Time.millitm = (TimeDest.tv_usec - lpInvite_Data->Start_TimeDest.tv_usec) / 1000;
 					//--- Get Elapsed time String
 					if (Elapsed_Time.time > 3600)
-						sprintf(Crt_Time, "%s%s", Jstringftime(timestr, "%H:%M:%S.%f", &Elapsed_Time)->c_str(), Space_Time);
+						sprintf(Crt_Time, "%s%s", Jstringftime(timestr, "%H:%M:%S.%f", &Elapsed_Time).c_str(), Space_Time);
 					else if (Elapsed_Time.time > 60)
-						sprintf(Crt_Time, "%s%s", Jstringftime(timestr, "%M:%S.%f", &Elapsed_Time)->c_str(), Space_Time);
+						sprintf(Crt_Time, "%s%s", Jstringftime(timestr, "%M:%S.%f", &Elapsed_Time).c_str(), Space_Time);
 					else
-						sprintf(Crt_Time, "%s%s", Jstringftime(timestr, "%s.%f", &Elapsed_Time)->c_str(), Space_Time);
+						sprintf(Crt_Time, "%s%s", Jstringftime(timestr, "%s.%f", &Elapsed_Time).c_str(), Space_Time);
 					Crt_Time[strlen(Space_Time)] = 0;
 					//--- Get Command
 					SDP_Flag = (atoi(lpSIP_Msg->Content_Length) > 0 && (!strcmp(Command, "INVITE") || !strcmp(Command, "183") || !strcmp(Command, "200"))) ? TRUE : FALSE;
@@ -5960,7 +6779,9 @@ int CSIP_Server::Write_Call_Log(const char *Head, char *S1, SIP_MSG *lpSIP_Msg, 
 						sprintf(Buf_IP, "%s%s:%d", Buf_IP, lpInvite_Data->pToDest->Real_IP, lpInvite_Data->pToDest->Port);
 						fprintf(HsfOut1, "  %s\r\n", Buf_IP);
 						if (!(!strcmp(lpSIP_Msg->Command, "BYE") && !Addrcmp(&lpSIP_Msg->FromDest.Raddr, &lpInvite_Data->pToDest->Raddr)))
-						{ // It indicate Call flows access in the end if Condition True, so don't handle it
+						{ 
+							CRASH_DEBUG_COMMAND;
+							// It indicate Call flows access in the end if Condition True, so don't handle it
 							sprintf(Buf_IP, "%s:%s%s", lpSIP_Msg->FromDest.Virtual_IP, lpSIP_Msg->Via_Port, Space_Flow);
 							Buf_IP[38] = 0;
 							if ((Online_Cur = Check_OnLine(lpSIP_Msg->From_Name)) >= 0)
@@ -6067,7 +6888,7 @@ int CSIP_Server::Send_Relay_Command(const char *Command, SIP_MSG *lpSIP_Msg, COM
 			lpSIP_Msg->FromDest.Virtual_IP,
 			lpSIP_Msg->ToDest.Virtual_IP,
 			lpSIP_Msg->SDP_IP,
-			lpSIP_Msg->SDP_Port,
+			lpSIP_Msg->SDP_Audio_Port,
 			Total);
 	Write_Log("send", S1, NULL, lpSIP_Msg);
 	len = Hsf_send(0, S1, strlen(S1), 0);
@@ -6385,6 +7206,7 @@ BOOL CSIP_Server::URL_Filter(char *Url)
 
 int CSIP_Server::SIP_Syntax_Filter(SIP_MSG *lpSIP_Msg)
 {
+	CRASH_DEBUG_COMMAND;
 	int Error_Code;
 
 	Error_Code = 0;
@@ -6393,11 +7215,12 @@ int CSIP_Server::SIP_Syntax_Filter(SIP_MSG *lpSIP_Msg)
 	if (!strcmp(lpSIP_Msg->From_Name, "") || !strcmp(lpSIP_Msg->To_Name, ""))
 		Error_Code = 400;
 
-	return -Error_Code;
+	RETURN - Error_Code;
 }
 
 int CSIP_Server::Domain_Name_Analysis(char *Url, char *IP)
 {
+	CRASH_DEBUG_COMMAND;
 	//Method: Domain_Name_Analysis(Trunk_GW_IP,Trunk_GW_IP);
 	int i, err;
 	char URL[100], Error[256];
@@ -6418,19 +7241,24 @@ int CSIP_Server::Domain_Name_Analysis(char *Url, char *IP)
 			if ((lpHost = gethostbyname(URL)) != NULL)
 				strcpy(IP, inet_ntoa(*(LPIN_ADDR)(lpHost->h_addr)));
 			else
-				return -1;
+			{
+				RETURN - 1;
+			}
 		}
 		else
 			strcpy(IP, URL);
 	}
 	else
-		return -1;
+	{
+		RETURN - 1;
+	}
 
-	return 0;
+	RETURN 0;
 }
 
 bool CSIP_Server::Port_Filter(char *Port)
 {
+	CRASH_DEBUG_COMMAND;
 	char Buf[16];
 	bool Filter_Flag;
 
@@ -6443,11 +7271,12 @@ bool CSIP_Server::Port_Filter(char *Port)
 	else
 		Filter_Flag = TRUE;
 
-	return Filter_Flag;
+	RETURN Filter_Flag;
 }
 
 int CSIP_Server::Trunk_GW_Set(DEST_DATA *lpTrunk_GW, char *Url)
 {
+	CRASH_DEBUG_COMMAND;
 	char Trunk_GW_Url[100], Trunk_GW_IP[100], Trunk_GW_Port[16], *Token;
 	bool DN_Flag;
 	//--- Trunking GW Process ---
@@ -6472,7 +7301,7 @@ int CSIP_Server::Trunk_GW_Set(DEST_DATA *lpTrunk_GW, char *Url)
 	{ // Build Trunking GW Connection
 		// lpTrunk_GW->Flag = TRUE;
 		// strcpy(lpTrunk_GW->R_IP, Trunk_GW_IP);
-		// lpTrunk_GW->Port = Jatoi(Trunk_GW_Port, sizeof(Trunk_GW_Port));
+		// lpTrunk_GW->Port = Jatoi(Trunk_GW_Port);
 		if (m_lpNetIF)
 		{
 			if (lpTrunk_GW->is_used())
@@ -6493,11 +7322,12 @@ int CSIP_Server::Trunk_GW_Set(DEST_DATA *lpTrunk_GW, char *Url)
 		// lpTrunk_GW->Port = Jatoi(NTUT_GW_Port, sizeof(NTUT_GW_Port));
 		// lpTrunk_GW->Crypto_Type = NTUT_GW_Crypto_Type;
 	}
-	return 0;
+	RETURN 0;
 }
 
 int CSIP_Server::Update_Trunk_GW(char *Old_GW_IP, unsigned short Old_GW_Port)
 {
+	CRASH_DEBUG_COMMAND;
 	int i, Online_Cur;
 
 	for (i = 0, Online_Cur = 0; Online_Cur < SIP_ONLINE_SIZE; Online_Cur++)
@@ -6524,20 +7354,31 @@ int CSIP_Server::Update_Trunk_GW(char *Old_GW_IP, unsigned short Old_GW_Port)
 		}
 	}
 	if (Online_Cur >= SIP_ONLINE_SIZE)
-		return -1;
+	{
+		RETURN - 1;
+	}
 	else
-		return 0;
+	{
+		RETURN 0;
+	}
 }
 
-int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
+int CSIP_Server::Edit_URL(char *S1, size_t S1_size, const char *Head, const char *URL)
 {
+	CRASH_DEBUG_COMMAND;
+	bool Port_Flag = FALSE;
 	int i, j, k, Beg, Mid, Mid11, Mid12, Mid2, Mid31, Mid32, End, Beg1, End1;
+
+	// 1. Initialize
+	Beg = Mid = Mid11 = Mid12 = Mid2 = Mid31 = Mid32 = End = Beg1 = End1 = 0;
 
 	// 2. Search Beg_Point, Beg=關鍵字之後位址
 	k = (int)strlen(Head);
 	if (k > (int)strlen(S1))
-		return 0;
-	for (i = 0; i <= (int)strlen(S1) - k; i++) // 需再修正
+	{
+		RETURN - 1;
+	}
+	for (i = Beg = 0; i <= (int)strlen(S1) - k; i++) // 需再修正
 	{
 		if (S1[i] == Head[0])
 		{
@@ -6551,8 +7392,10 @@ int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
 			}
 		}
 	}
-	if (Beg == 0)
-		return 0; // 關鍵字未尋獲
+	if (Beg == 0 || S1[i - 1] != '\n')
+	{
+		RETURN - 2;
+	} // 關鍵字未尋獲
 
 	// 3. Search End_Point, End=關鍵字串句尾
 	End = (int)strlen(S1) - 1;
@@ -6562,6 +7405,9 @@ int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
 			End = i - 1;
 			break;
 		}
+
+	// Check URL whether with Port
+	Port_Flag = (strchr(URL, ':')) ? TRUE : FALSE;
 
 	// 4. Search Mid(@), Mid1(:), Mid, Mid2(;), Mid31(<). Mid32(>)
 	if (Beg < End)
@@ -6644,18 +7490,30 @@ int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
 	{
 		Beg1 = Mid + 1;
 		for (i = Beg1; i <= End; i++)
-			if ((S1[i] == ';') || (S1[i] == ':') || (S1[i] == '>') || (S1[i] == ' '))
+			if ((S1[i] == ';') || (S1[i] == '>') || (S1[i] == ' '))
 			{
 				End1 = i - 1;
 				break;
 			}
 		if (i > End)
 			End1 = End;
+		if (!Port_Flag && Mid12 > 0 && (Mid12 - 1) < End1)
+			End1 = Mid12 - 1;
 	}
 	else if ((Mid11 > 0) && (Mid11 < Mid12)) // with  sip: --> 1.1.1.1 <-- :5060
 	{
 		Beg1 = Mid11 + 1;
-		End1 = Mid12 - 1;
+		if (!Port_Flag)
+			End1 = Mid12 - 1;
+		else
+		{
+			for (i = Beg1; i <= End; i++)
+				if ((S1[i] == ';') || (S1[i] == '>') || (S1[i] == ' '))
+				{
+					End1 = i - 1;
+					break;
+				}
+		}
 		if (Beg1 > End1)
 		{
 			Beg1 = End1 = 0;
@@ -6663,11 +7521,13 @@ int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
 	}
 	else if ((Mid11 > 0) && (Mid12 == 0)) // with sip:1.1.1.1  or 1.1.1.1:5060
 	{
-		if (S1[Mid11 - 1] == 'p')
+		if ((Mid11 - Beg) > 3 &&
+			((S1[Mid11 - 3] == 's' && S1[Mid11 - 2] == 'i' && S1[Mid11 - 1] == 'p') ||
+			 (S1[Mid11 - 4] == 's' && S1[Mid11 - 3] == 'i' && S1[Mid11 - 2] == 'p' && S1[Mid11 - 1] == 's')))
 		{
 			Beg1 = Mid11 + 1;
 			for (i = Beg1; i <= End; i++)
-				if ((S1[i] == ';') || (S1[i] == ':') || (S1[i] == '>') || (S1[i] == ' '))
+				if ((S1[i] == ';') || (S1[i] == '>') || (S1[i] == ' '))
 				{
 					End1 = i - 1;
 					break;
@@ -6677,8 +7537,18 @@ int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
 		}
 		else
 		{
-			End1 = Mid11 - 1;
-			for (i = End1; i >= Beg; i--)
+			if (!Port_Flag)
+				End1 = Mid11 - 1;
+			else
+			{
+				for (i = Mid11 + 1; i <= End; i++)
+					if ((S1[i] == ';') || (S1[i] == '>') || (S1[i] == ' '))
+					{
+						End1 = i - 1;
+						break;
+					}
+			}
+			for (i = Mid11 - 1; i >= Beg; i--)
 				if ((S1[i] == ';') || (S1[i] == ':') || (S1[i] == '<') || (S1[i] == ' '))
 				{
 					Beg1 = i + 1;
@@ -6686,17 +7556,25 @@ int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
 				}
 		}
 	}
-	else if (Mid11 == 0 && Mid12 == 0 && Mid2 > 0) // SIP/2.0/UDP 1.1.1.1;
+	else if (Mid11 == 0 && Mid12 == 0) // SIP/2.0/UDP 1.1.1.1;
 	{
-		End1 = Mid2 - 1;
-		for (i = End1; i >= Beg; i--)
-			if (S1[i] == ' ')
-			{
-				Beg1 = i + 1;
-				break;
-			}
-		if (i < Beg)
-			Beg1 = Beg;
+		if (Mid2 > 0)
+		{
+			End1 = Mid2 - 1;
+			for (i = End1; i >= Beg; i--)
+				if (S1[i] == ' ')
+				{
+					Beg1 = i + 1;
+					break;
+				}
+			if (i < Beg)
+				Beg1 = Beg;
+		}
+		else
+		{
+			Beg1 = End;
+			End1 = Beg1;
+		}
 	}
 	else // INVITE 1.1.1.1  SIP/2.0
 	{
@@ -6719,14 +7597,17 @@ int CSIP_Server::Edit_URL(char *S1, const char *Head, char *URL)
 		}
 	}
 	if ((End1 > 0) && (End1 >= Beg1))
-		Edition(S1, Beg1, End1, URL);
+		Edition(S1, S1_size, Beg1, End1, URL);
 
-	return 0;
+	RETURN 0;
 }
 
-int CSIP_Server::Edit_Port(char *S1, const char *Head, char *Port)
+int CSIP_Server::Edit_Port(char *S1, size_t S1_size, const char *Head, const char *Port)
 {
 	int i, j, k, Beg, Mid, Mid11, Mid12, Mid2, Mid31, Mid32, End, Beg1, End1;
+
+	// 1. Initialize
+	Beg = Mid = Mid11 = Mid12 = Mid2 = Mid31 = Mid32 = End = Beg1 = End1 = 0;
 
 	// 2. Search Beg_Point, Beg=關鍵字之後位址
 	k = (int)strlen(Head);
@@ -6868,22 +7749,22 @@ int CSIP_Server::Edit_Port(char *S1, const char *Head, char *Port)
 	}
 
 	if ((End1 > 0) && (End1 >= Beg1))
-		Edition(S1, Beg1, End1, Port);
+		Edition(S1, S1_size, Beg1, End1, Port);
 
 	return 0;
 }
 
-int CSIP_Server::Edition(char *S1, int Beg, int End, char *Buf)
+int CSIP_Server::Edition(char *S1, size_t S1_size, int Beg, int End, const char *Buf)
 {
-	char SS1[2000];
+	char SS1[SIP_MSG_LEGNTH];
 
 	if ((End < (int)strlen(S1)) && (End >= Beg) && (Beg >= 0))
 	{
 		strncpy(SS1, S1, Beg);
 		SS1[Beg] = 0;
-		strcat(SS1, Buf);
-		strcat(SS1, &S1[End + 1]);
-		strcpy(S1, SS1);
+		Jstrncat(SS1, Buf, sizeof(SS1));
+		Jstrncat(SS1, &S1[End + 1], sizeof(SS1));
+		Jstrncpy(S1, SS1, S1_size);
 		return 0;
 	}
 	else

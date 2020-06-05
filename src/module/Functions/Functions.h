@@ -28,6 +28,7 @@
 #include <sys/socket.h> // inet_ntoa
 #include <unistd.h>		// close socket...
 #include <sys/time.h>	// gettimeofday
+#include <netinet/tcp.h>
 
 typedef int BOOL;
 typedef int SOCKET;
@@ -69,6 +70,7 @@ typedef struct in_addr *LPIN_ADDR;
 #define atob(x) (atoi(x) ? true : false)
 
 #define JTCP_DEBUG FALSE
+#define PrintBinary_ENABLE true
 
 typedef struct _STREAM_BUFFER
 {
@@ -171,7 +173,8 @@ public:
 bool replace_all_newline(std::string &str, const std::string &from, const std::string &to, int search_posi);
 size_t Jstrlen(const char *string);
 int Jstrnlen(const char *string, int buf_size);
-int Jatoi(const char *str, size_t str_size);
+#define Jatoi(str)	_Jatoi(str, sizeof(str))
+int _Jatoi(const char *str, size_t str_size);
 char *Jitoa(int d, char *buf, int base);
 // int Jstrntoi(const char *str, char **ptr, int base, size_t str_size);
 char Filename_Mapper(char name);
@@ -194,7 +197,7 @@ char *Jstrncat2(char *strDest, const char *strSource, size_t count, size_t strDe
 char *Jsprintf(char *String, size_t Str_size, const char *format, ...);
 int Jsnprintf(char *String, size_t Str_size, const char *format, ...);
 char *Jstrftime(char *strDest, size_t maxsize, const char *format, const timeb *tp = NULL);
-std::string *Jstringftime(std::string &strDest, const char *format, const timeb *tp);
+std::string &Jstringftime(std::string &strDest, const char *format, const timeb *tp);
 unsigned long JGetTickCount();
 char *Jstrntok(char *s, const char *delim, char **last);
 char *Jstrtok(char *string, const char *control);
@@ -253,5 +256,14 @@ int Jgethostbyname(char *Domain, char *ip, size_t ip_size);
 
 std::string GetIpFromSockaddr(int af, const sockaddr *sa);
 uint16_t GetPortFromSockaddr(int af, const sockaddr *sa);
+
+#define JTransfer_BinaryToHexStr(msg, len) string_JTransfer_BinaryToHexStr(msg, len).c_str()
+std::string string_JTransfer_BinaryToHexStr(const char *msg, size_t len);
+#define JTransfer_HexNumStrToHexBinary(hex_num_str, len)	string_JTransfer_HexNumStrToHexBinary(hex_num_str, len).c_str()
+std::string string_JTransfer_HexNumStrToHexBinary(const char *hex_num_str, size_t len);
+double CalClockTime(bool start_flag);
+int PrintBinary(const char *msg, int len);
+int MyPrintf(const char *fmt, ...);
+char *MakeTcpFlagStr(tcphdr *tcp);
 
 #endif //For FUNCTIONS_DEF
