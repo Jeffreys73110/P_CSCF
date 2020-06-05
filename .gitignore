@@ -4,6 +4,9 @@
 ### develop
 Debug
 Release
+FileTraceLog
+build
+*.out*
 
 ### C++ ###
 # Prerequisites
