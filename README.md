@@ -98,16 +98,6 @@ Based on the feasibility verification purpose and fragmented packet consideratio
 ubuntu 18.04
 
 ## Installation and Configuration
-* set network environment
-	```shell
- 	 $ sudo sh setip.sh
-	```
-* Adjust configuration
-	```shell
-	# edit parameters and save file function
-	$ vim StdAfx.h
-	```
-
 * Build code and run
 	```shell
 	# build code
@@ -115,11 +105,6 @@ ubuntu 18.04
 
 	# run server after the EPC_Server starts up
 	$ ./p_cscf.out
-	```
-
-* unset network environment
-	```shell
-  	$ sudo sh unset_ip.sh
 	```
 
 ## Modify configuration
